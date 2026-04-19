@@ -22,18 +22,13 @@ bc_duplicate_sources = [
   'grouping/bc_duplicate_grouping_by_full_hash.c',
   'output/bc_duplicate_output_simple.c',
   'output/bc_duplicate_output_json.c',
+  'worker/bc_duplicate_worker_batch_uring.c',
   'worker/bc_duplicate_worker_fast.c',
   'worker/bc_duplicate_worker_full.c',
   'worker/bc_duplicate_worker_reader.c',
   bc_duplicate_throughput_sources,
   bc_duplicate_dispatch_decision_sources,
 ]
-
-if liburing_dep.found()
-  bc_duplicate_sources += 'worker/bc_duplicate_worker_batch_uring.c'
-else
-  bc_duplicate_sources += 'worker/bc_duplicate_worker_batch_sync.c'
-endif
 
 cc = meson.get_compiler('c')
 libm_dep = cc.find_library('m', required : true)

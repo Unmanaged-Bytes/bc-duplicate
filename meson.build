@@ -55,6 +55,7 @@ bc_concurrency_dep = dependency('bc-concurrency', version : '>=1.0.2')
 bc_io_dep          = dependency('bc-io')
 bc_runtime_dep     = dependency('bc-runtime')
 xxhash_dep         = dependency('libxxhash', version : '>=0.8.0')
+liburing_dep       = dependency('liburing',     version : '>=2.5', required : get_option('use_io_uring'))
 
 bc_duplicate_deps = [
   bc_core_dep,
@@ -64,13 +65,8 @@ bc_duplicate_deps = [
   bc_io_dep,
   bc_runtime_dep,
   xxhash_dep,
+  liburing_dep,
 ]
-
-liburing_dep = dependency('liburing', version : '>=2.5', required : get_option('use_io_uring'))
-if liburing_dep.found()
-  bc_duplicate_deps += liburing_dep
-  add_project_arguments('-DBC_DUPLICATE_HAVE_IO_URING=1', language : 'c')
-endif
 
 bc_duplicate_internal_inc = include_directories('include/internal')
 
