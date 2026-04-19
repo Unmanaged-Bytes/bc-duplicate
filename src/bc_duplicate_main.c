@@ -1,27 +1,62 @@
 // SPDX-License-Identifier: MIT
 
 #include "bc_duplicate_cli_internal.h"
+#include "bc_duplicate_discovery_internal.h"
+#include "bc_duplicate_error_internal.h"
+#include "bc_duplicate_filter_internal.h"
 #include "bc_duplicate_types_internal.h"
 
 #include "bc_allocators.h"
 #include "bc_concurrency.h"
+#include "bc_containers_vector.h"
 #include "bc_core.h"
 #include "bc_runtime.h"
 #include "bc_runtime_cli.h"
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+
+#define BC_DUPLICATE_APPLICATION_ENTRY_INITIAL_CAPACITY ((size_t)1024)
+#define BC_DUPLICATE_APPLICATION_ENTRY_MAX_CAPACITY     ((size_t)1U << 28)
 
 typedef struct bc_duplicate_application_state {
     const bc_runtime_cli_parsed_t* parsed;
     bc_duplicate_cli_options_t cli_options;
+    bc_containers_vector_t* entries;
+    bc_duplicate_filter_t* filter;
+    bc_duplicate_error_collector_t* errors;
     int exit_code;
 } bc_duplicate_application_state_t;
 
 static bool bc_duplicate_application_init(const bc_runtime_t* application, void* user_data)
 {
-    (void)application;
-    (void)user_data;
+    bc_duplicate_application_state_t* state = (bc_duplicate_application_state_t*)user_data;
+
+    bc_allocators_context_t* memory_context = NULL;
+    if (!bc_runtime_memory_context(application, &memory_context)) {
+        state->exit_code = 1;
+        return false;
+    }
+
+    if (!bc_duplicate_error_collector_create(memory_context, &state->errors)) {
+        state->exit_code = 1;
+        return false;
+    }
+
+    if (!bc_containers_vector_create(memory_context, sizeof(bc_duplicate_file_entry_t), BC_DUPLICATE_APPLICATION_ENTRY_INITIAL_CAPACITY,
+                                     BC_DUPLICATE_APPLICATION_ENTRY_MAX_CAPACITY, &state->entries)) {
+        state->exit_code = 1;
+        return false;
+    }
+
+    if (state->cli_options.include_list != NULL || state->cli_options.exclude_list != NULL) {
+        if (!bc_duplicate_filter_create(memory_context, state->cli_options.include_list, state->cli_options.exclude_list, &state->filter)) {
+            state->exit_code = 1;
+            return false;
+        }
+    }
+
     return true;
 }
 
@@ -41,15 +76,81 @@ static bool bc_duplicate_application_run(const bc_runtime_t* application, void* 
         return false;
     }
 
-    fputs("bc-duplicate: scan pipeline not implemented yet (iter 1 skeleton)\n", stderr);
+    bc_concurrency_signal_handler_t* signal_handler = NULL;
+    bc_runtime_signal_handler(application, &signal_handler);
+
+    bc_duplicate_discovery_options_t discovery_options = {
+        .include_hidden = state->cli_options.include_hidden,
+        .follow_symlinks = state->cli_options.follow_symlinks,
+        .one_file_system = state->cli_options.one_file_system,
+        .minimum_file_size = state->cli_options.minimum_file_size,
+    };
+
+    const char* const* positional_argument_values = state->cli_options.positional_argument_values;
+    size_t positional_argument_count = (size_t)state->cli_options.positional_argument_count;
+
+    size_t discovery_worker_count = bc_concurrency_effective_worker_count(concurrency_context);
+    bool discovery_ok;
+    if (discovery_worker_count >= 2) {
+        discovery_ok = bc_duplicate_discovery_expand_parallel(memory_context, concurrency_context, state->entries, state->errors, signal_handler,
+                                                              state->filter, &discovery_options, positional_argument_values,
+                                                              positional_argument_count);
+    } else {
+        discovery_ok = bc_duplicate_discovery_expand(memory_context, state->entries, state->errors, signal_handler, state->filter,
+                                                     &discovery_options, positional_argument_values, positional_argument_count);
+    }
+    if (!discovery_ok) {
+        state->exit_code = 1;
+        return false;
+    }
+
+    bool interrupted_after_discovery = false;
+    bc_runtime_should_stop(application, &interrupted_after_discovery);
+    if (interrupted_after_discovery) {
+        fputs("bc-duplicate: interrupted by signal, aborting before grouping\n", stderr);
+        state->exit_code = 130;
+        return false;
+    }
+
+    bc_duplicate_error_collector_flush_to_stderr(state->errors);
+
+    size_t entry_count = bc_containers_vector_length(state->entries);
+    size_t error_count = bc_duplicate_error_collector_count(state->errors);
+    fprintf(stderr, "bc-duplicate: discovery: %zu file(s) found, %zu error(s) (pipeline grouping/hashing not implemented yet)\n", entry_count,
+            error_count);
+
     state->exit_code = 0;
     return true;
 }
 
 static void bc_duplicate_application_cleanup(const bc_runtime_t* application, void* user_data)
 {
-    (void)application;
-    (void)user_data;
+    bc_duplicate_application_state_t* state = (bc_duplicate_application_state_t*)user_data;
+
+    bc_allocators_context_t* memory_context = NULL;
+    if (!bc_runtime_memory_context(application, &memory_context)) {
+        return;
+    }
+
+    if (state->filter != NULL) {
+        bc_duplicate_filter_destroy(memory_context, state->filter);
+        state->filter = NULL;
+    }
+    if (state->entries != NULL) {
+        size_t entry_count = bc_containers_vector_length(state->entries);
+        for (size_t index = 0; index < entry_count; ++index) {
+            bc_duplicate_file_entry_t entry;
+            if (bc_containers_vector_get(state->entries, index, &entry) && entry.absolute_path != NULL) {
+                bc_allocators_pool_free(memory_context, entry.absolute_path);
+            }
+        }
+        bc_containers_vector_destroy(memory_context, state->entries);
+        state->entries = NULL;
+    }
+    if (state->errors != NULL) {
+        bc_duplicate_error_collector_destroy(memory_context, state->errors);
+        state->errors = NULL;
+    }
 }
 
 int main(int argument_count, char** argument_values)
