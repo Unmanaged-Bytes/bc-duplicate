@@ -1,0 +1,14 @@
+bc-duplicate (1.0.0-1) stable; urgency=medium
+
+  * Initial release.
+  * Parallel duplicate-file finder using a size -> partial-hash ->
+    full-hash pipeline.
+  * Hash algorithms: xxh3 (default), xxh128, SHA-256.
+  * Subcommands: 'scan' (group output) and 'summary' (statistics).
+  * Skips hardlinks (dedup by dev/ino), hidden files, symlinks, and
+    pseudo-filesystems by default.
+  * Adaptive single-thread / multi-thread dispatch based on
+    auto-measured hardware throughput.
+  * Batched I/O via io_uring when available; synchronous fallback.
+
+ -- Younes Benmoussa <younes.benmoussa@pm.me>  Sun, 19 Apr 2026 12:00:00 +0000

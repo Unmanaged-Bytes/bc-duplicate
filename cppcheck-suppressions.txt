@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: MIT
+
+unusedFunction:*/bc_core_math.h
+preprocessorErrorDirective
+unusedFunction:*tests/*_wrap.c
+unusedFunction:*/tests/*_wrap.c
+missingIncludeSystem:*
+normalCheckLevelMaxBranches:*
+checkersReport
+unmatchedSuppression

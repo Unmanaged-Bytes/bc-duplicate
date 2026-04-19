@@ -1,0 +1,35 @@
+Source: bc-duplicate
+Section: utils
+Priority: optional
+Maintainer: Younes Benmoussa <younes.benmoussa@pm.me>
+Build-Depends: debhelper-compat (= 13),
+               meson (>= 1.0),
+               ninja-build,
+               pkg-config,
+               libxxhash-dev (>= 0.8.0),
+               liburing-dev (>= 2.5),
+               libbc-core-dev (>= 1.0.0),
+               libbc-allocators-dev (>= 1.0.0),
+               libbc-containers-dev (>= 1.0.0),
+               libbc-io-dev (>= 1.0.0),
+               libbc-concurrency-dev (>= 1.0.0),
+               libbc-runtime-dev (>= 1.0.0),
+               libcmocka-dev
+Standards-Version: 4.6.2
+Homepage: https://unmanaged-bytes.com/
+Vcs-Git: https://github.com/Unmanaged-Bytes/bc-duplicate.git
+Vcs-Browser: https://github.com/Unmanaged-Bytes/bc-duplicate
+
+Package: bc-duplicate
+Architecture: amd64
+Depends: ${misc:Depends},
+         ${shlibs:Depends}
+Description: Parallel duplicate-file finder
+ Walks directory trees and reports groups of identical files using a
+ size -> partial-hash -> full-hash pipeline. Hashes with xxh3 by
+ default (or xxh128 / SHA-256 on demand), with batched I/O via
+ io_uring when available. Hardlinks, hidden files, symlinks and
+ pseudo-filesystems (/proc, /sys, /dev, ...) are skipped by default.
+ .
+ Provides 'scan' and 'summary' subcommands and JSON output suitable
+ for downstream consumers (e.g. bc-vigil).
