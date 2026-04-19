@@ -24,10 +24,19 @@ test_bc_duplicate_grouping_unit = executable('test_bc_duplicate_grouping_unit',
   'test_bc_duplicate_grouping_unit.c',
   '../src/grouping/bc_duplicate_grouping_by_size.c',
   '../src/grouping/bc_duplicate_grouping_by_fast_hash.c',
+  '../src/grouping/bc_duplicate_grouping_by_full_hash.c',
   include_directories : [bc_duplicate_internal_inc],
   dependencies : [cmocka_dep, bc_core_dep, bc_allocators_dep],
 )
 test('bc_duplicate_grouping_unit', test_bc_duplicate_grouping_unit)
+
+test_bc_duplicate_output_unit = executable('test_bc_duplicate_output_unit',
+  'test_bc_duplicate_output_unit.c',
+  '../src/output/bc_duplicate_output_simple.c',
+  include_directories : [bc_duplicate_internal_inc],
+  dependencies : [cmocka_dep, bc_core_dep, bc_allocators_dep],
+)
+test('bc_duplicate_output_unit', test_bc_duplicate_output_unit)
 
 test_bc_duplicate_discovery_e2e = executable('test_bc_duplicate_discovery_e2e',
   'test_bc_duplicate_discovery_e2e.c',

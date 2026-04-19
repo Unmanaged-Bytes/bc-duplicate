@@ -16,4 +16,11 @@ bool bc_duplicate_worker_fast_pass(bc_allocators_context_t* memory_context, bc_c
                                    bc_concurrency_signal_handler_t* signal_handler, bc_duplicate_file_entry_t* entries,
                                    const bc_duplicate_group_t* size_groups, size_t size_group_count, size_t* out_files_hashed);
 
+bool bc_duplicate_worker_full_pass(bc_allocators_context_t* memory_context, bc_concurrency_context_t* concurrency_context,
+                                   bc_concurrency_signal_handler_t* signal_handler, bc_duplicate_algorithm_t algorithm,
+                                   bc_duplicate_file_entry_t* entries, const bc_duplicate_group_t* candidate_groups,
+                                   size_t candidate_group_count, size_t* out_files_hashed);
+
+size_t bc_duplicate_worker_digest_size(bc_duplicate_algorithm_t algorithm);
+
 #endif /* BC_DUPLICATE_WORKER_INTERNAL_H */

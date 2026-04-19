@@ -10,7 +10,10 @@ bc_duplicate_sources = [
   'filter/bc_duplicate_filter.c',
   'grouping/bc_duplicate_grouping_by_size.c',
   'grouping/bc_duplicate_grouping_by_fast_hash.c',
+  'grouping/bc_duplicate_grouping_by_full_hash.c',
+  'output/bc_duplicate_output_simple.c',
   'worker/bc_duplicate_worker_fast.c',
+  'worker/bc_duplicate_worker_full.c',
 ]
 
 cc = meson.get_compiler('c')

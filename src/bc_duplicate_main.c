@@ -5,6 +5,7 @@
 #include "bc_duplicate_error_internal.h"
 #include "bc_duplicate_filter_internal.h"
 #include "bc_duplicate_grouping_internal.h"
+#include "bc_duplicate_output_internal.h"
 #include "bc_duplicate_types_internal.h"
 #include "bc_duplicate_worker_internal.h"
 
@@ -181,16 +182,80 @@ static bool bc_duplicate_application_run(const bc_runtime_t* application, void* 
         return false;
     }
 
-    fprintf(stderr, "bc-duplicate: fast-hash groups: %zu (%zu candidates after %zu hashed) (full-hash pass not implemented yet)\n",
-            fast_hash_group_count, fast_hash_candidate_count, fast_files_hashed);
+    fprintf(stderr, "bc-duplicate: fast-hash groups: %zu (%zu candidates after %zu hashed)\n", fast_hash_group_count, fast_hash_candidate_count,
+            fast_files_hashed);
 
+    bc_duplicate_group_t* final_groups = NULL;
+    size_t final_group_count = 0;
+    size_t full_files_hashed = 0;
+
+    if (fast_hash_group_count > 0) {
+        if (!bc_duplicate_worker_full_pass(memory_context, concurrency_context, signal_handler, state->cli_options.algorithm, entries_array,
+                                           fast_hash_groups, fast_hash_group_count, &full_files_hashed)) {
+            if (fast_hash_groups != NULL) {
+                bc_allocators_pool_free(memory_context, fast_hash_groups);
+            }
+            bc_allocators_pool_free(memory_context, size_groups);
+            bc_allocators_pool_free(memory_context, entries_array);
+            state->exit_code = 1;
+            return false;
+        }
+
+        size_t digest_size = bc_duplicate_worker_digest_size(state->cli_options.algorithm);
+        if (!bc_duplicate_grouping_by_full_hash(memory_context, entries_array, fast_hash_groups, fast_hash_group_count, digest_size,
+                                                &final_groups, &final_group_count)) {
+            if (fast_hash_groups != NULL) {
+                bc_allocators_pool_free(memory_context, fast_hash_groups);
+            }
+            bc_allocators_pool_free(memory_context, size_groups);
+            bc_allocators_pool_free(memory_context, entries_array);
+            state->exit_code = 1;
+            return false;
+        }
+    }
+
+    size_t duplicate_file_count = 0;
+    size_t wasted_bytes = 0;
+    for (size_t group_index = 0; group_index < final_group_count; ++group_index) {
+        size_t extra = final_groups[group_index].entry_count - 1;
+        duplicate_file_count += extra;
+        wasted_bytes += extra * final_groups[group_index].file_size;
+    }
+
+    bc_duplicate_statistics_t statistics = {
+        .files_scanned = entry_count,
+        .directories_scanned = 0,
+        .files_skipped = 0,
+        .hardlinks_collapsed = hardlinks_collapsed,
+        .size_candidate_count = size_candidate_count,
+        .files_hashed_fast = fast_files_hashed,
+        .files_hashed_full = full_files_hashed,
+        .duplicate_group_count = final_group_count,
+        .duplicate_file_count = duplicate_file_count,
+        .wasted_bytes = wasted_bytes,
+        .wall_ms = 0,
+    };
+
+    fprintf(stderr, "bc-duplicate: %zu duplicate group(s), %zu duplicate file(s), %zu wasted byte(s)\n", final_group_count,
+            duplicate_file_count, wasted_bytes);
+
+    bool output_ok = true;
+    if (state->cli_options.command == BC_DUPLICATE_COMMAND_SUMMARY) {
+        output_ok = bc_duplicate_output_summary_write(stdout, &statistics);
+    } else {
+        output_ok = bc_duplicate_output_simple_write(stdout, entries_array, final_groups, final_group_count);
+    }
+
+    if (final_groups != NULL) {
+        bc_allocators_pool_free(memory_context, final_groups);
+    }
     if (fast_hash_groups != NULL) {
         bc_allocators_pool_free(memory_context, fast_hash_groups);
     }
     bc_allocators_pool_free(memory_context, size_groups);
     bc_allocators_pool_free(memory_context, entries_array);
 
-    state->exit_code = 0;
+    state->exit_code = output_ok ? 0 : 1;
     return true;
 }
 

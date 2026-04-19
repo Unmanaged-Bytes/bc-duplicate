@@ -213,6 +213,56 @@ static void test_by_fast_hash_drops_unique_singletons(void** state)
     }
 }
 
+static void make_entry_with_full_hash(bc_duplicate_file_entry_t* entry, size_t file_size, dev_t device, ino_t inode, uint64_t fast_hash,
+                                      const uint8_t* full_hash, size_t digest_size)
+{
+    make_entry(entry, file_size, device, inode, fast_hash);
+    memcpy(entry->full_hash, full_hash, digest_size);
+}
+
+static void test_by_full_hash_splits_fast_group(void** state)
+{
+    struct fixture* fixture = *state;
+    const uint8_t hash_alpha[16] = {0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0, 0, 0, 0, 0, 0, 0, 0};
+    const uint8_t hash_beta[16] = {0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0, 0, 0, 0, 0, 0, 0, 0};
+    const uint8_t hash_gamma[16] = {0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0, 0, 0, 0, 0, 0, 0, 0};
+    bc_duplicate_file_entry_t entries[5];
+    make_entry_with_full_hash(&entries[0], 100, 1, 10, 0xAAAA, hash_alpha, 8);
+    make_entry_with_full_hash(&entries[1], 100, 1, 11, 0xAAAA, hash_beta, 8);
+    make_entry_with_full_hash(&entries[2], 100, 1, 12, 0xAAAA, hash_alpha, 8);
+    make_entry_with_full_hash(&entries[3], 100, 1, 13, 0xAAAA, hash_gamma, 8);
+    make_entry_with_full_hash(&entries[4], 100, 1, 14, 0xAAAA, hash_alpha, 8);
+    bc_duplicate_group_t fast_group = {.start_index = 0, .entry_count = 5, .file_size = 100};
+
+    bc_duplicate_group_t* full_groups = NULL;
+    size_t full_group_count = 0;
+    assert_true(bc_duplicate_grouping_by_full_hash(fixture->memory_context, entries, &fast_group, 1, 8, &full_groups, &full_group_count));
+    assert_int_equal(full_group_count, 1);
+    assert_int_equal(full_groups[0].entry_count, 3);
+    bc_allocators_pool_free(fixture->memory_context, full_groups);
+}
+
+static void test_by_full_hash_returns_no_groups_when_all_unique(void** state)
+{
+    struct fixture* fixture = *state;
+    const uint8_t hash_a[16] = {0xAA, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    const uint8_t hash_b[16] = {0xBB, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    const uint8_t hash_c[16] = {0xCC, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    bc_duplicate_file_entry_t entries[3];
+    make_entry_with_full_hash(&entries[0], 100, 1, 10, 0xAAAA, hash_a, 8);
+    make_entry_with_full_hash(&entries[1], 100, 1, 11, 0xAAAA, hash_b, 8);
+    make_entry_with_full_hash(&entries[2], 100, 1, 12, 0xAAAA, hash_c, 8);
+    bc_duplicate_group_t fast_group = {.start_index = 0, .entry_count = 3, .file_size = 100};
+
+    bc_duplicate_group_t* full_groups = NULL;
+    size_t full_group_count = 0;
+    assert_true(bc_duplicate_grouping_by_full_hash(fixture->memory_context, entries, &fast_group, 1, 8, &full_groups, &full_group_count));
+    assert_int_equal(full_group_count, 0);
+    if (full_groups != NULL) {
+        bc_allocators_pool_free(fixture->memory_context, full_groups);
+    }
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
@@ -224,6 +274,8 @@ int main(void)
         cmocka_unit_test_setup_teardown(test_by_size_collapse_singleton_drops_group, setup, teardown),
         cmocka_unit_test_setup_teardown(test_by_fast_hash_splits_size_group, setup, teardown),
         cmocka_unit_test_setup_teardown(test_by_fast_hash_drops_unique_singletons, setup, teardown),
+        cmocka_unit_test_setup_teardown(test_by_full_hash_splits_fast_group, setup, teardown),
+        cmocka_unit_test_setup_teardown(test_by_full_hash_returns_no_groups_when_all_unique, setup, teardown),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

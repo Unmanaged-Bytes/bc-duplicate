@@ -244,6 +244,77 @@ static void test_symlink_input_skipped(void** state)
     assert_non_null(strstr(stderr_buffer, "discovery: 1 file(s) found"));
 }
 
+static void test_full_pipeline_reports_duplicate_paths(void** state)
+{
+    (void)state;
+    const char* base_directory = BC_DUPLICATE_TEST_FIXTURES_DIRECTORY "/full_pipeline";
+    assert_int_equal(bc_duplicate_test_ensure_directory(base_directory), 0);
+    const char dup_payload[] = "duplicate content shared by three files";
+    const char unique_payload[] = "this content is unique................xx";
+    assert_int_equal(bc_duplicate_test_write_file(BC_DUPLICATE_TEST_FIXTURES_DIRECTORY "/full_pipeline/a.bin", dup_payload, sizeof(dup_payload)),
+                     0);
+    assert_int_equal(bc_duplicate_test_write_file(BC_DUPLICATE_TEST_FIXTURES_DIRECTORY "/full_pipeline/b.bin", dup_payload, sizeof(dup_payload)),
+                     0);
+    assert_int_equal(bc_duplicate_test_write_file(BC_DUPLICATE_TEST_FIXTURES_DIRECTORY "/full_pipeline/c.bin", dup_payload, sizeof(dup_payload)),
+                     0);
+    assert_int_equal(
+        bc_duplicate_test_write_file(BC_DUPLICATE_TEST_FIXTURES_DIRECTORY "/full_pipeline/d.bin", unique_payload, sizeof(unique_payload)), 0);
+
+    const char* argv[] = {BC_DUPLICATE_TEST_BINARY_PATH, "scan", base_directory, NULL};
+    char stdout_buffer[BC_DUPLICATE_TEST_OUTPUT_BUFFER_SIZE];
+    char stderr_buffer[BC_DUPLICATE_TEST_OUTPUT_BUFFER_SIZE];
+    int exit_status = -1;
+    assert_int_equal(bc_duplicate_test_run(argv, stdout_buffer, sizeof(stdout_buffer), stderr_buffer, sizeof(stderr_buffer), &exit_status), 0);
+    assert_int_equal(exit_status, 0);
+    assert_non_null(strstr(stderr_buffer, "1 duplicate group(s)"));
+    assert_non_null(strstr(stderr_buffer, "2 duplicate file(s)"));
+    assert_non_null(strstr(stdout_buffer, "/full_pipeline/a.bin"));
+    assert_non_null(strstr(stdout_buffer, "/full_pipeline/b.bin"));
+    assert_non_null(strstr(stdout_buffer, "/full_pipeline/c.bin"));
+    assert_null(strstr(stdout_buffer, "/full_pipeline/d.bin"));
+}
+
+static void test_summary_command_writes_statistics(void** state)
+{
+    (void)state;
+    const char* base_directory = BC_DUPLICATE_TEST_FIXTURES_DIRECTORY "/summary_pipeline";
+    assert_int_equal(bc_duplicate_test_ensure_directory(base_directory), 0);
+    const char payload[] = "summary content";
+    assert_int_equal(bc_duplicate_test_write_file(BC_DUPLICATE_TEST_FIXTURES_DIRECTORY "/summary_pipeline/x.bin", payload, sizeof(payload)), 0);
+    assert_int_equal(bc_duplicate_test_write_file(BC_DUPLICATE_TEST_FIXTURES_DIRECTORY "/summary_pipeline/y.bin", payload, sizeof(payload)), 0);
+
+    const char* argv[] = {BC_DUPLICATE_TEST_BINARY_PATH, "summary", base_directory, NULL};
+    char stdout_buffer[BC_DUPLICATE_TEST_OUTPUT_BUFFER_SIZE];
+    char stderr_buffer[BC_DUPLICATE_TEST_OUTPUT_BUFFER_SIZE];
+    int exit_status = -1;
+    assert_int_equal(bc_duplicate_test_run(argv, stdout_buffer, sizeof(stdout_buffer), stderr_buffer, sizeof(stderr_buffer), &exit_status), 0);
+    assert_int_equal(exit_status, 0);
+    assert_non_null(strstr(stdout_buffer, "Files scanned:        2"));
+    assert_non_null(strstr(stdout_buffer, "Duplicate groups:     1"));
+    assert_non_null(strstr(stdout_buffer, "Duplicate files:      1"));
+    assert_null(strstr(stdout_buffer, "/summary_pipeline/x.bin"));
+}
+
+static void test_sha256_pipeline_produces_same_groups(void** state)
+{
+    (void)state;
+    const char* base_directory = BC_DUPLICATE_TEST_FIXTURES_DIRECTORY "/sha256_pipeline";
+    assert_int_equal(bc_duplicate_test_ensure_directory(base_directory), 0);
+    const char payload[] = "sha256 should agree with xxh3 about duplicate groups";
+    assert_int_equal(bc_duplicate_test_write_file(BC_DUPLICATE_TEST_FIXTURES_DIRECTORY "/sha256_pipeline/a.bin", payload, sizeof(payload)), 0);
+    assert_int_equal(bc_duplicate_test_write_file(BC_DUPLICATE_TEST_FIXTURES_DIRECTORY "/sha256_pipeline/b.bin", payload, sizeof(payload)), 0);
+
+    const char* argv[] = {BC_DUPLICATE_TEST_BINARY_PATH, "scan", "--algorithm=sha256", base_directory, NULL};
+    char stdout_buffer[BC_DUPLICATE_TEST_OUTPUT_BUFFER_SIZE];
+    char stderr_buffer[BC_DUPLICATE_TEST_OUTPUT_BUFFER_SIZE];
+    int exit_status = -1;
+    assert_int_equal(bc_duplicate_test_run(argv, stdout_buffer, sizeof(stdout_buffer), stderr_buffer, sizeof(stderr_buffer), &exit_status), 0);
+    assert_int_equal(exit_status, 0);
+    assert_non_null(strstr(stderr_buffer, "1 duplicate group(s)"));
+    assert_non_null(strstr(stdout_buffer, "/sha256_pipeline/a.bin"));
+    assert_non_null(strstr(stdout_buffer, "/sha256_pipeline/b.bin"));
+}
+
 static void test_fast_hash_groups_identical_files(void** state)
 {
     (void)state;
@@ -284,6 +355,9 @@ int main(void)
         cmocka_unit_test(test_pseudo_filesystem_skipped),
         cmocka_unit_test(test_symlink_input_skipped),
         cmocka_unit_test(test_fast_hash_groups_identical_files),
+        cmocka_unit_test(test_full_pipeline_reports_duplicate_paths),
+        cmocka_unit_test(test_summary_command_writes_statistics),
+        cmocka_unit_test(test_sha256_pipeline_produces_same_groups),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }
