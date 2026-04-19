@@ -244,6 +244,61 @@ static void test_symlink_input_skipped(void** state)
     assert_non_null(strstr(stderr_buffer, "discovery: 1 file(s) found"));
 }
 
+static void test_json_output_to_file(void** state)
+{
+    (void)state;
+    const char* base_directory = BC_DUPLICATE_TEST_FIXTURES_DIRECTORY "/json_file_output";
+    const char* json_path = BC_DUPLICATE_TEST_FIXTURES_DIRECTORY "/json_file_output/result.json";
+    assert_int_equal(bc_duplicate_test_ensure_directory(base_directory), 0);
+    const char payload[] = "json output test payload";
+    assert_int_equal(bc_duplicate_test_write_file(BC_DUPLICATE_TEST_FIXTURES_DIRECTORY "/json_file_output/x.bin", payload, sizeof(payload)), 0);
+    assert_int_equal(bc_duplicate_test_write_file(BC_DUPLICATE_TEST_FIXTURES_DIRECTORY "/json_file_output/y.bin", payload, sizeof(payload)), 0);
+
+    char output_argument[512];
+    snprintf(output_argument, sizeof(output_argument), "--output=%s", json_path);
+    const char* argv[] = {BC_DUPLICATE_TEST_BINARY_PATH, "scan", output_argument, base_directory, NULL};
+    char stdout_buffer[BC_DUPLICATE_TEST_OUTPUT_BUFFER_SIZE];
+    char stderr_buffer[BC_DUPLICATE_TEST_OUTPUT_BUFFER_SIZE];
+    int exit_status = -1;
+    assert_int_equal(bc_duplicate_test_run(argv, stdout_buffer, sizeof(stdout_buffer), stderr_buffer, sizeof(stderr_buffer), &exit_status), 0);
+    assert_int_equal(exit_status, 0);
+
+    FILE* json_stream = fopen(json_path, "r");
+    assert_non_null(json_stream);
+    char json_buffer[BC_DUPLICATE_TEST_OUTPUT_BUFFER_SIZE];
+    size_t json_length = fread(json_buffer, 1, sizeof(json_buffer) - 1, json_stream);
+    fclose(json_stream);
+    json_buffer[json_length] = '\0';
+
+    assert_non_null(strstr(json_buffer, "\"version\":\"1.0.0\""));
+    assert_non_null(strstr(json_buffer, "\"tool\":\"bc-duplicate\""));
+    assert_non_null(strstr(json_buffer, "\"algorithm\":\"xxh3\""));
+    assert_non_null(strstr(json_buffer, "\"duplicate_groups\":1"));
+    assert_non_null(strstr(json_buffer, "/json_file_output/x.bin"));
+    assert_non_null(strstr(json_buffer, "/json_file_output/y.bin"));
+    assert_non_null(strstr(json_buffer, "\"wall_ms\":"));
+}
+
+static void test_output_dash_forces_simple_format(void** state)
+{
+    (void)state;
+    const char* base_directory = BC_DUPLICATE_TEST_FIXTURES_DIRECTORY "/output_dash";
+    assert_int_equal(bc_duplicate_test_ensure_directory(base_directory), 0);
+    const char payload[] = "dash forces simple jdupes-style output";
+    assert_int_equal(bc_duplicate_test_write_file(BC_DUPLICATE_TEST_FIXTURES_DIRECTORY "/output_dash/u.bin", payload, sizeof(payload)), 0);
+    assert_int_equal(bc_duplicate_test_write_file(BC_DUPLICATE_TEST_FIXTURES_DIRECTORY "/output_dash/v.bin", payload, sizeof(payload)), 0);
+
+    const char* argv[] = {BC_DUPLICATE_TEST_BINARY_PATH, "scan", "--output=-", base_directory, NULL};
+    char stdout_buffer[BC_DUPLICATE_TEST_OUTPUT_BUFFER_SIZE];
+    char stderr_buffer[BC_DUPLICATE_TEST_OUTPUT_BUFFER_SIZE];
+    int exit_status = -1;
+    assert_int_equal(bc_duplicate_test_run(argv, stdout_buffer, sizeof(stdout_buffer), stderr_buffer, sizeof(stderr_buffer), &exit_status), 0);
+    assert_int_equal(exit_status, 0);
+    assert_null(strstr(stdout_buffer, "\"version\""));
+    assert_non_null(strstr(stdout_buffer, "/output_dash/u.bin"));
+    assert_non_null(strstr(stdout_buffer, "/output_dash/v.bin"));
+}
+
 static void test_full_pipeline_reports_duplicate_paths(void** state)
 {
     (void)state;
@@ -358,6 +413,8 @@ int main(void)
         cmocka_unit_test(test_full_pipeline_reports_duplicate_paths),
         cmocka_unit_test(test_summary_command_writes_statistics),
         cmocka_unit_test(test_sha256_pipeline_produces_same_groups),
+        cmocka_unit_test(test_json_output_to_file),
+        cmocka_unit_test(test_output_dash_forces_simple_format),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

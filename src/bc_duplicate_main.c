@@ -19,9 +19,20 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <unistd.h>
 
 #define BC_DUPLICATE_APPLICATION_ENTRY_INITIAL_CAPACITY ((size_t)1024)
 #define BC_DUPLICATE_APPLICATION_ENTRY_MAX_CAPACITY     ((size_t)1U << 28)
+
+static uint64_t bc_duplicate_main_monotonic_ms(void)
+{
+    struct timespec now_monotonic;
+    if (clock_gettime(CLOCK_MONOTONIC, &now_monotonic) != 0) {
+        return 0;
+    }
+    return (uint64_t)now_monotonic.tv_sec * 1000u + (uint64_t)(now_monotonic.tv_nsec / 1000000);
+}
 
 typedef struct bc_duplicate_application_state {
     const bc_runtime_cli_parsed_t* parsed;
@@ -66,6 +77,8 @@ static bool bc_duplicate_application_init(const bc_runtime_t* application, void*
 static bool bc_duplicate_application_run(const bc_runtime_t* application, void* user_data)
 {
     bc_duplicate_application_state_t* state = (bc_duplicate_application_state_t*)user_data;
+
+    uint64_t started_at_monotonic_ms = bc_duplicate_main_monotonic_ms();
 
     bc_allocators_context_t* memory_context = NULL;
     if (!bc_runtime_memory_context(application, &memory_context)) {
@@ -233,17 +246,53 @@ static bool bc_duplicate_application_run(const bc_runtime_t* application, void* 
         .duplicate_group_count = final_group_count,
         .duplicate_file_count = duplicate_file_count,
         .wasted_bytes = wasted_bytes,
-        .wall_ms = 0,
+        .wall_ms = bc_duplicate_main_monotonic_ms() - started_at_monotonic_ms,
     };
 
-    fprintf(stderr, "bc-duplicate: %zu duplicate group(s), %zu duplicate file(s), %zu wasted byte(s)\n", final_group_count,
-            duplicate_file_count, wasted_bytes);
+    fprintf(stderr, "bc-duplicate: %zu duplicate group(s), %zu duplicate file(s), %zu wasted byte(s) in %llu ms\n", final_group_count,
+            duplicate_file_count, wasted_bytes, (unsigned long long)statistics.wall_ms);
+
+    FILE* output_stream = stdout;
+    bool output_stream_owned = false;
+    bc_duplicate_output_format_t output_format = BC_DUPLICATE_OUTPUT_FORMAT_SIMPLE;
+
+    if (state->cli_options.command == BC_DUPLICATE_COMMAND_SUMMARY) {
+        output_format = BC_DUPLICATE_OUTPUT_FORMAT_SIMPLE;
+    } else if (state->cli_options.output_destination_mode == BC_DUPLICATE_OUTPUT_DESTINATION_FILE) {
+        output_stream = fopen(state->cli_options.output_destination_path, "w");
+        if (output_stream == NULL) {
+            fprintf(stderr, "bc-duplicate: cannot open output file '%s'\n", state->cli_options.output_destination_path);
+            if (final_groups != NULL) {
+                bc_allocators_pool_free(memory_context, final_groups);
+            }
+            if (fast_hash_groups != NULL) {
+                bc_allocators_pool_free(memory_context, fast_hash_groups);
+            }
+            bc_allocators_pool_free(memory_context, size_groups);
+            bc_allocators_pool_free(memory_context, entries_array);
+            state->exit_code = 1;
+            return false;
+        }
+        output_stream_owned = true;
+        output_format = BC_DUPLICATE_OUTPUT_FORMAT_JSON;
+    } else if (state->cli_options.output_destination_mode == BC_DUPLICATE_OUTPUT_DESTINATION_AUTO) {
+        output_format = isatty(fileno(stdout)) ? BC_DUPLICATE_OUTPUT_FORMAT_SIMPLE : BC_DUPLICATE_OUTPUT_FORMAT_JSON;
+    } else {
+        output_format = BC_DUPLICATE_OUTPUT_FORMAT_SIMPLE;
+    }
 
     bool output_ok = true;
     if (state->cli_options.command == BC_DUPLICATE_COMMAND_SUMMARY) {
-        output_ok = bc_duplicate_output_summary_write(stdout, &statistics);
+        output_ok = bc_duplicate_output_summary_write(output_stream, &statistics);
+    } else if (output_format == BC_DUPLICATE_OUTPUT_FORMAT_JSON) {
+        output_ok = bc_duplicate_output_json_write(output_stream, state->cli_options.algorithm, entries_array, final_groups, final_group_count,
+                                                   &statistics);
     } else {
-        output_ok = bc_duplicate_output_simple_write(stdout, entries_array, final_groups, final_group_count);
+        output_ok = bc_duplicate_output_simple_write(output_stream, entries_array, final_groups, final_group_count);
+    }
+
+    if (output_stream_owned) {
+        fclose(output_stream);
     }
 
     if (final_groups != NULL) {

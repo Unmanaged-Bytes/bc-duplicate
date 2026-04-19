@@ -33,6 +33,7 @@ test('bc_duplicate_grouping_unit', test_bc_duplicate_grouping_unit)
 test_bc_duplicate_output_unit = executable('test_bc_duplicate_output_unit',
   'test_bc_duplicate_output_unit.c',
   '../src/output/bc_duplicate_output_simple.c',
+  '../src/output/bc_duplicate_output_json.c',
   include_directories : [bc_duplicate_internal_inc],
   dependencies : [cmocka_dep, bc_core_dep, bc_allocators_dep],
 )
