@@ -8,8 +8,11 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/types.h>
 #include <unistd.h>
 #include <xxhash.h>
+
+#define BC_DUPLICATE_FAST_DUAL_MIN_FILE_SIZE (BC_DUPLICATE_FAST_HASH_BLOCK_SIZE * 2)
 
 typedef struct bc_duplicate_worker_fast_context {
     bc_duplicate_file_entry_t* entries;
@@ -48,19 +51,31 @@ static void bc_duplicate_worker_fast_iteration(size_t iteration_index, void* use
         return;
     }
 
-    uint8_t buffer[BC_DUPLICATE_FAST_HASH_BLOCK_SIZE];
-    ssize_t bytes_read = read(file_descriptor, buffer, BC_DUPLICATE_FAST_HASH_BLOCK_SIZE);
-    int read_errno = errno;
-    close(file_descriptor);
-
-    if (bytes_read < 0) {
+    uint8_t prefix_buffer[BC_DUPLICATE_FAST_HASH_BLOCK_SIZE];
+    const ssize_t prefix_bytes_read = pread(file_descriptor, prefix_buffer, BC_DUPLICATE_FAST_HASH_BLOCK_SIZE, 0);
+    if (prefix_bytes_read < 0) {
+        const int prefix_errno = errno;
+        close(file_descriptor);
         entry->fast_hash = 0;
         entry->fast_hash_computed = true;
-        entry->fast_hash_errno = read_errno;
+        entry->fast_hash_errno = prefix_errno;
         return;
     }
 
-    entry->fast_hash = XXH3_64bits(buffer, (size_t)bytes_read);
+    uint64_t combined_hash = XXH3_64bits(prefix_buffer, (size_t)prefix_bytes_read);
+
+    if (entry->file_size >= BC_DUPLICATE_FAST_DUAL_MIN_FILE_SIZE) {
+        uint8_t suffix_buffer[BC_DUPLICATE_FAST_HASH_BLOCK_SIZE];
+        const off_t suffix_offset = (off_t)(entry->file_size - BC_DUPLICATE_FAST_HASH_BLOCK_SIZE);
+        const ssize_t suffix_bytes_read = pread(file_descriptor, suffix_buffer, BC_DUPLICATE_FAST_HASH_BLOCK_SIZE, suffix_offset);
+        if (suffix_bytes_read > 0) {
+            combined_hash ^= XXH3_64bits(suffix_buffer, (size_t)suffix_bytes_read);
+        }
+    }
+
+    close(file_descriptor);
+
+    entry->fast_hash = combined_hash;
     entry->fast_hash_computed = true;
     entry->fast_hash_errno = 0;
 }

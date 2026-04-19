@@ -63,41 +63,33 @@ mem_bw=34.68 GB/s  parallel_startup=37.7 us  per_file=3.55 us
 | bc-duplicate sha256 | 0.076 s | 0.000 | 2.24× |
 | jdupes -rmS | 0.077 s | 0.000 | 2.26× |
 
-### `/var/benchmarks/nested` (724 414 files, 13 GB) — perf-stat, median of 3 warm runs
+### `/var/benchmarks/nested` (724 414 files, 13 GB) — hyperfine, 5 warm runs
 
 Each tool was run with its own preferred parallelism: bc-duplicate uses
 the 8 physical cores (SMT off-by-design), fclones uses 16 SMT threads
-(default), jdupes is single-threaded (no parallelism flag).
+(default), jdupes is single-threaded.
 
-| Tool | wall | task-clock | IPC | branch-miss | cache-miss | RSS peak |
-|---|---:|---:|---:|---:|---:|---:|
-| bc-duplicate xxh3 | **1.79 s** | 7.47 s | 0.94 | 9.08 % | 8.41 % | 350 MB |
-| fclones | 2.37 s | 22.07 s | 1.09 | 3.54 % | 9.71 % | 151 MB |
-| jdupes -rmS | 32.30 s | 32.31 s | 1.95 | 2.28 % | 9.01 % | 140 MB |
+| Tool | mean | stddev | rel |
+|---|---:|---:|---:|
+| **bc-duplicate xxh3** | **1.83 s** | 0.012 | **1.00×** |
+| fclones (16 SMT)      | 2.58 s     | 0.036 | 1.41× |
+| fclones --threads 8   | 2.95 s     | 0.034 | 1.62× |
+| jdupes -rmS           | 32.25 s    | 0.101 | 17.65× |
 
-bc-duplicate executes ~3.2x fewer instructions than fclones for the
-same corpus: algorithmic win from the size+head-hash pre-grouping.
-fclones spreads work across 2x the threads (SMT) but the higher
-task-clock more than offsets the parallelism gain.
+### `/var/benchmarks` (767 312 files, 19 GB, `--hidden`) — hyperfine, 5 warm runs
 
-Per-tool observations:
-- bc-duplicate IPC 0.94 is the lowest — branch mispredictions (9 %)
-  point at the algorithm-switching `consumer_callback` in the hot loop.
-  Specialising by algo (one consumer per xxh3/xxh128/sha256) would
-  remove a per-chunk indirect call.
-- RSS is dominated by io_uring slot buffers
-  (32 slots * 128 KB * 8 workers = 32 MB * 8 = 256 MB just for the
-  rings). Halving slot buffer to 64 KB would shave ~128 MB.
-- jdupes' high IPC (1.95) is misleading: it runs on a single core, the
-  pipeline is fully predictable but the wall is ~18x longer.
+| Tool | mean | stddev | rel |
+|---|---:|---:|---:|
+| **bc-duplicate xxh3** | **3.70 s** | 0.032 | **1.00×** |
+| fclones (16 SMT)      | 3.93 s     | 0.087 | 1.06× |
+| fclones --threads 8   | 4.59 s     | 0.016 | 1.24× |
+| jdupes -r             | 41.51 s    | 0.078 | 11.22× |
 
-### `/var/benchmarks` (767 312 files, 19 GB, with `--hidden`) — single-run wall
-
-| Tool | wall | rel |
-|---|---:|---:|
-| bc-duplicate xxh3 (adaptive dispatch) | 5.50 s | 1.00× |
-| fclones | 3.20 s | 0.58× |
-| jdupes -rmS | 55.60 s | 10.11× |
+The 19 GB number is **iter 10**: before the suffix-hash addition we
+were stuck at 5.5-7.9 s (more than 1.5x slower than fclones). Adding
+a trailing 4 KB pread to the fast pass and XOR-mixing it into the
+fast hash drops the full-pass candidate count enough to halve the
+wall on this corpus.
 
 ## 3-way correctness check
 
