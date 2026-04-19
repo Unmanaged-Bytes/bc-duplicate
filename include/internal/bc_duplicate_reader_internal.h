@@ -22,7 +22,7 @@ typedef struct bc_duplicate_reader_batch_item {
 typedef struct bc_duplicate_reader_ring bc_duplicate_reader_ring_t;
 
 #define BC_DUPLICATE_READER_RING_SLOT_COUNT        32
-#define BC_DUPLICATE_READER_RING_SLOT_BUFFER_BYTES ((size_t)(128 * 1024))
+#define BC_DUPLICATE_READER_RING_SLOT_BUFFER_BYTES ((size_t)(256 * 1024))
 
 bool bc_duplicate_reader_ring_init(bc_duplicate_reader_ring_t* ring);
 void bc_duplicate_reader_ring_destroy(bc_duplicate_reader_ring_t* ring);

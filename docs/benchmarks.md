@@ -99,9 +99,32 @@ Per-tool observations:
 | fclones | 3.20 s | 0.58× |
 | jdupes -rmS | 55.60 s | 10.11× |
 
-Correctness identical between bc-duplicate and jdupes on
-`/var/benchmarks --hidden`: both report 195 670 duplicate groups,
-564 618 duplicate files, 11 362 544 541 wasted bytes.
+## 3-way correctness check
+
+`scripts/correctness-3way.sh <target>` runs the three tools, parses
+their output into one TSV line per duplicate group (paths sorted),
+and `comm`-diffs the resulting sets. To compare apples to apples the
+script forces:
+
+| Tool | Flags | Why |
+|---|---|---|
+| bc-duplicate | `scan --hidden` | bc-duplicate skips dotfiles by default |
+| fclones | `group --hidden --no-ignore` | fclones skips dotfiles AND respects `.gitignore` / `.fdignore` by default — without `--no-ignore` it would silently drop entire `build/`, `node_modules/`, `target/`, ... trees |
+| jdupes | `-r` | jdupes already includes hidden by default and ignores `.gitignore` |
+
+Without `--no-ignore`, fclones reports 45 groups on
+`/var/benchmarks/github` while bc-duplicate and jdupes both find 400
+— it is the `.gitignore` filter, not a hashing bug.
+
+Results on the reference machine (current main):
+
+| Target | files | bc-duplicate | fclones | jdupes | pairwise |
+|---|---:|---:|---:|---:|---|
+| `/var/benchmarks/2026-04-12` | 7 092 | 103 | 103 | 103 | identical |
+| `/var/benchmarks/github` | 18 064 | 400 | 400 | 400 | identical |
+| `/var/benchmarks/nested` | 724 414 | 102 418 | 102 418 | 102 418 | identical |
+
+Logs: `build/perf-logs/correctness-3way-{github,nested}.log`.
 
 ## Parallelism / fairness disclosure
 
