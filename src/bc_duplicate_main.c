@@ -2,10 +2,12 @@
 
 #include "bc_duplicate_cli_internal.h"
 #include "bc_duplicate_discovery_internal.h"
+#include "bc_duplicate_dispatch_decision_internal.h"
 #include "bc_duplicate_error_internal.h"
 #include "bc_duplicate_filter_internal.h"
 #include "bc_duplicate_grouping_internal.h"
 #include "bc_duplicate_output_internal.h"
+#include "bc_duplicate_throughput_internal.h"
 #include "bc_duplicate_types_internal.h"
 #include "bc_duplicate_worker_internal.h"
 
@@ -203,8 +205,29 @@ static bool bc_duplicate_application_run(const bc_runtime_t* application, void* 
     size_t full_files_hashed = 0;
 
     if (fast_hash_group_count > 0) {
+        bool full_pass_force_single_thread = false;
+        size_t full_pass_total_bytes = 0;
+        size_t full_pass_file_count = 0;
+        for (size_t group_index = 0; group_index < fast_hash_group_count; ++group_index) {
+            full_pass_file_count += fast_hash_groups[group_index].entry_count;
+            full_pass_total_bytes += fast_hash_groups[group_index].entry_count * fast_hash_groups[group_index].file_size;
+        }
+        size_t effective_worker_count = bc_concurrency_effective_worker_count(concurrency_context);
+        if (state->cli_options.threads_mode != BC_DUPLICATE_THREADS_MODE_EXPLICIT && state->cli_options.threads_mode != BC_DUPLICATE_THREADS_MODE_MONO) {
+            bc_duplicate_throughput_constants_t throughput_constants;
+            if (bc_duplicate_throughput_get_or_measure(concurrency_context, &throughput_constants)) {
+                bool should_multi = bc_duplicate_dispatch_decision_should_go_multithread(full_pass_file_count, full_pass_total_bytes,
+                                                                                         state->cli_options.algorithm, &throughput_constants,
+                                                                                         effective_worker_count);
+                full_pass_force_single_thread = !should_multi;
+                fprintf(stderr, "bc-duplicate: full-hash dispatch: %s (%zu file(s), %zu byte(s), %zu worker(s))\n",
+                        full_pass_force_single_thread ? "single-thread" : "multi-thread", full_pass_file_count, full_pass_total_bytes,
+                        effective_worker_count);
+            }
+        }
+
         if (!bc_duplicate_worker_full_pass(memory_context, concurrency_context, signal_handler, state->cli_options.algorithm, entries_array,
-                                           fast_hash_groups, fast_hash_group_count, &full_files_hashed)) {
+                                           fast_hash_groups, fast_hash_group_count, full_pass_force_single_thread, &full_files_hashed)) {
             if (fast_hash_groups != NULL) {
                 bc_allocators_pool_free(memory_context, fast_hash_groups);
             }

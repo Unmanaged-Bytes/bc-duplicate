@@ -1,5 +1,14 @@
 # SPDX-License-Identifier: MIT
 
+bc_duplicate_throughput_sources = files(
+  'bench/bc_duplicate_throughput.c',
+  'bench/bc_duplicate_throughput_cache.c',
+)
+
+bc_duplicate_dispatch_decision_sources = files(
+  'bench/bc_duplicate_dispatch_decision.c',
+)
+
 bc_duplicate_sources = [
   'bc_duplicate_main.c',
   'cli/bc_duplicate_cli_spec.c',
@@ -15,6 +24,8 @@ bc_duplicate_sources = [
   'output/bc_duplicate_output_json.c',
   'worker/bc_duplicate_worker_fast.c',
   'worker/bc_duplicate_worker_full.c',
+  bc_duplicate_throughput_sources,
+  bc_duplicate_dispatch_decision_sources,
 ]
 
 cc = meson.get_compiler('c')

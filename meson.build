@@ -51,7 +51,7 @@ endif
 bc_core_dep        = dependency('bc-core')
 bc_allocators_dep  = dependency('bc-allocators')
 bc_containers_dep  = dependency('bc-containers')
-bc_concurrency_dep = dependency('bc-concurrency')
+bc_concurrency_dep = dependency('bc-concurrency', version : '>=1.0.2')
 bc_io_dep          = dependency('bc-io')
 bc_runtime_dep     = dependency('bc-runtime')
 xxhash_dep         = dependency('libxxhash', version : '>=0.8.0')

@@ -192,7 +192,7 @@ static void bc_duplicate_worker_full_iteration(size_t iteration_index, void* use
 bool bc_duplicate_worker_full_pass(bc_allocators_context_t* memory_context, bc_concurrency_context_t* concurrency_context,
                                    bc_concurrency_signal_handler_t* signal_handler, bc_duplicate_algorithm_t algorithm,
                                    bc_duplicate_file_entry_t* entries, const bc_duplicate_group_t* candidate_groups,
-                                   size_t candidate_group_count, size_t* out_files_hashed)
+                                   size_t candidate_group_count, bool force_single_thread, size_t* out_files_hashed)
 {
     *out_files_hashed = 0;
 
@@ -225,7 +225,17 @@ bool bc_duplicate_worker_full_pass(bc_allocators_context_t* memory_context, bc_c
         .algorithm = algorithm,
     };
 
-    bool dispatch_ok = bc_concurrency_for(concurrency_context, 0, total_candidates, 1, bc_duplicate_worker_full_iteration, &context);
+    bool dispatch_ok = true;
+    if (force_single_thread) {
+        for (size_t iteration_index = 0; iteration_index < total_candidates; ++iteration_index) {
+            if (bc_duplicate_worker_full_should_stop(&context)) {
+                break;
+            }
+            bc_duplicate_worker_full_iteration(iteration_index, &context);
+        }
+    } else {
+        dispatch_ok = bc_concurrency_for(concurrency_context, 0, total_candidates, 1, bc_duplicate_worker_full_iteration, &context);
+    }
 
     bc_allocators_pool_free(memory_context, candidate_indices);
     if (!dispatch_ok) {
