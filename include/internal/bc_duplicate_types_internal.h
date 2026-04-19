@@ -70,6 +70,12 @@ typedef struct bc_duplicate_file_entry {
     size_t file_size;
     dev_t device_id;
     ino_t inode_number;
+    uint64_t fast_hash;
+    uint8_t full_hash[BC_DUPLICATE_MAX_DIGEST_SIZE];
+    bool fast_hash_computed;
+    bool full_hash_computed;
+    int fast_hash_errno;
+    int full_hash_errno;
 } bc_duplicate_file_entry_t;
 
 typedef struct bc_duplicate_group {

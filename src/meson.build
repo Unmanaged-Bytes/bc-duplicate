@@ -8,6 +8,9 @@ bc_duplicate_sources = [
   'discovery/bc_duplicate_discovery_walk_parallel.c',
   'error/bc_duplicate_error_collector.c',
   'filter/bc_duplicate_filter.c',
+  'grouping/bc_duplicate_grouping_by_size.c',
+  'grouping/bc_duplicate_grouping_by_fast_hash.c',
+  'worker/bc_duplicate_worker_fast.c',
 ]
 
 cc = meson.get_compiler('c')

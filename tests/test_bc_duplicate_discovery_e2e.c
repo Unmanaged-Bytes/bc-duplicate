@@ -244,6 +244,31 @@ static void test_symlink_input_skipped(void** state)
     assert_non_null(strstr(stderr_buffer, "discovery: 1 file(s) found"));
 }
 
+static void test_fast_hash_groups_identical_files(void** state)
+{
+    (void)state;
+    const char* base_directory = BC_DUPLICATE_TEST_FIXTURES_DIRECTORY "/fast_hash_dups";
+    assert_int_equal(bc_duplicate_test_ensure_directory(base_directory), 0);
+    const char payload[] = "the quick brown fox jumps over the lazy dog";
+    assert_int_equal(bc_duplicate_test_write_file(BC_DUPLICATE_TEST_FIXTURES_DIRECTORY "/fast_hash_dups/a.txt", payload, sizeof(payload)), 0);
+    assert_int_equal(bc_duplicate_test_write_file(BC_DUPLICATE_TEST_FIXTURES_DIRECTORY "/fast_hash_dups/b.txt", payload, sizeof(payload)), 0);
+    const char different[] = "different content of the exact same length, X";
+    assert_int_equal(bc_duplicate_test_write_file(BC_DUPLICATE_TEST_FIXTURES_DIRECTORY "/fast_hash_dups/c.txt", different, sizeof(different)), 0);
+    const char short_payload[] = "tiny";
+    assert_int_equal(bc_duplicate_test_write_file(BC_DUPLICATE_TEST_FIXTURES_DIRECTORY "/fast_hash_dups/d.txt", short_payload, sizeof(short_payload)),
+                     0);
+
+    const char* argv[] = {BC_DUPLICATE_TEST_BINARY_PATH, "scan", base_directory, NULL};
+    char stdout_buffer[BC_DUPLICATE_TEST_OUTPUT_BUFFER_SIZE];
+    char stderr_buffer[BC_DUPLICATE_TEST_OUTPUT_BUFFER_SIZE];
+    int exit_status = -1;
+    assert_int_equal(bc_duplicate_test_run(argv, stdout_buffer, sizeof(stdout_buffer), stderr_buffer, sizeof(stderr_buffer), &exit_status), 0);
+    assert_int_equal(exit_status, 0);
+    assert_non_null(strstr(stderr_buffer, "discovery: 4 file(s) found"));
+    assert_non_null(strstr(stderr_buffer, "size groups: 1"));
+    assert_non_null(strstr(stderr_buffer, "fast-hash groups: 1"));
+}
+
 int main(void)
 {
     if (bc_duplicate_test_ensure_directory(BC_DUPLICATE_TEST_FIXTURES_DIRECTORY) != 0) {
@@ -258,6 +283,7 @@ int main(void)
         cmocka_unit_test(test_exclude_pattern_skips_files),
         cmocka_unit_test(test_pseudo_filesystem_skipped),
         cmocka_unit_test(test_symlink_input_skipped),
+        cmocka_unit_test(test_fast_hash_groups_identical_files),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }
