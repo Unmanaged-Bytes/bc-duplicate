@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 
+#include "bc_duplicate_reader_internal.h"
 #include "bc_duplicate_worker_internal.h"
 
 #include "bc_allocators_pool.h"
@@ -8,21 +9,39 @@
 #include "bc_core_hash.h"
 
 #include <errno.h>
-#include <fcntl.h>
+#include <stdbool.h>
 #include <stddef.h>
-#include <string.h>
-#include <unistd.h>
+#include <stdint.h>
 #include <xxhash.h>
 
-#define BC_DUPLICATE_FULL_HASH_CHUNK_SIZE ((size_t)(64 * 1024))
+#define BC_DUPLICATE_FULL_BATCH_ITEM_CAPACITY ((size_t)BC_DUPLICATE_READER_RING_SLOT_COUNT)
 
-typedef struct bc_duplicate_worker_full_context {
+typedef struct bc_duplicate_worker_full_consumer_state {
+    bc_duplicate_algorithm_t algorithm;
+    XXH3_state_t* xxh3_state;
+    XXH3_state_t* xxh128_state;
+    bc_core_sha256_context_t sha256_context;
+    bool initialised;
+    bool failed;
+} bc_duplicate_worker_full_consumer_state_t;
+
+typedef struct bc_duplicate_worker_full_slot {
+    bc_duplicate_reader_ring_t* ring;
+    bool ring_initialised;
+    bc_duplicate_reader_batch_item_t batch_items[BC_DUPLICATE_FULL_BATCH_ITEM_CAPACITY];
+    bc_duplicate_worker_full_consumer_state_t consumer_states[BC_DUPLICATE_FULL_BATCH_ITEM_CAPACITY];
+} bc_duplicate_worker_full_slot_t;
+
+typedef struct bc_duplicate_worker_full_dispatch {
     bc_duplicate_file_entry_t* entries;
     const size_t* candidate_indices;
     size_t candidate_count;
     bc_concurrency_signal_handler_t* signal_handler;
     bc_duplicate_algorithm_t algorithm;
-} bc_duplicate_worker_full_context_t;
+    size_t batch_size;
+    size_t worker_slot_index;
+    bc_allocators_context_t* main_memory_context;
+} bc_duplicate_worker_full_dispatch_t;
 
 size_t bc_duplicate_worker_digest_size(bc_duplicate_algorithm_t algorithm)
 {
@@ -37,156 +56,207 @@ size_t bc_duplicate_worker_digest_size(bc_duplicate_algorithm_t algorithm)
     return 0;
 }
 
-static bool bc_duplicate_worker_full_should_stop(const bc_duplicate_worker_full_context_t* context)
+static bool bc_duplicate_worker_full_should_stop(const bc_concurrency_signal_handler_t* signal_handler)
 {
-    if (context->signal_handler == NULL) {
+    if (signal_handler == NULL) {
         return false;
     }
     bool should_stop = false;
-    bc_concurrency_signal_handler_should_stop(context->signal_handler, &should_stop);
+    bc_concurrency_signal_handler_should_stop(signal_handler, &should_stop);
     return should_stop;
 }
 
-static bool bc_duplicate_worker_full_hash_xxh3(int file_descriptor, uint8_t* buffer, uint8_t out_digest[BC_DUPLICATE_MAX_DIGEST_SIZE],
-                                               int* out_errno)
+static bool bc_duplicate_worker_full_consumer_init(bc_duplicate_worker_full_consumer_state_t* state, bc_duplicate_algorithm_t algorithm)
 {
-    XXH3_state_t* state = XXH3_createState();
-    if (state == NULL) {
-        *out_errno = ENOMEM;
-        return false;
-    }
-    XXH3_64bits_reset(state);
-    for (;;) {
-        ssize_t bytes_read = read(file_descriptor, buffer, BC_DUPLICATE_FULL_HASH_CHUNK_SIZE);
-        if (bytes_read == 0) {
-            break;
-        }
-        if (bytes_read < 0) {
-            *out_errno = errno;
-            XXH3_freeState(state);
-            return false;
-        }
-        XXH3_64bits_update(state, buffer, (size_t)bytes_read);
-    }
-    XXH64_hash_t digest = XXH3_64bits_digest(state);
-    XXH3_freeState(state);
-    bc_core_zero(out_digest, BC_DUPLICATE_MAX_DIGEST_SIZE);
-    bc_core_copy(out_digest, &digest, sizeof(digest));
-    *out_errno = 0;
-    return true;
-}
-
-static bool bc_duplicate_worker_full_hash_xxh128(int file_descriptor, uint8_t* buffer, uint8_t out_digest[BC_DUPLICATE_MAX_DIGEST_SIZE],
-                                                 int* out_errno)
-{
-    XXH3_state_t* state = XXH3_createState();
-    if (state == NULL) {
-        *out_errno = ENOMEM;
-        return false;
-    }
-    XXH3_128bits_reset(state);
-    for (;;) {
-        ssize_t bytes_read = read(file_descriptor, buffer, BC_DUPLICATE_FULL_HASH_CHUNK_SIZE);
-        if (bytes_read == 0) {
-            break;
-        }
-        if (bytes_read < 0) {
-            *out_errno = errno;
-            XXH3_freeState(state);
-            return false;
-        }
-        XXH3_128bits_update(state, buffer, (size_t)bytes_read);
-    }
-    XXH128_hash_t digest = XXH3_128bits_digest(state);
-    XXH3_freeState(state);
-    bc_core_zero(out_digest, BC_DUPLICATE_MAX_DIGEST_SIZE);
-    bc_core_copy(out_digest, &digest.high64, sizeof(digest.high64));
-    bc_core_copy(out_digest + sizeof(digest.high64), &digest.low64, sizeof(digest.low64));
-    *out_errno = 0;
-    return true;
-}
-
-static bool bc_duplicate_worker_full_hash_sha256(int file_descriptor, uint8_t* buffer, uint8_t out_digest[BC_DUPLICATE_MAX_DIGEST_SIZE],
-                                                 int* out_errno)
-{
-    bc_core_sha256_context_t context;
-    if (!bc_core_sha256_init(&context)) {
-        *out_errno = EINVAL;
-        return false;
-    }
-    for (;;) {
-        ssize_t bytes_read = read(file_descriptor, buffer, BC_DUPLICATE_FULL_HASH_CHUNK_SIZE);
-        if (bytes_read == 0) {
-            break;
-        }
-        if (bytes_read < 0) {
-            *out_errno = errno;
-            return false;
-        }
-        if (!bc_core_sha256_update(&context, buffer, (size_t)bytes_read)) {
-            *out_errno = EINVAL;
-            return false;
-        }
-    }
-    bc_core_zero(out_digest, BC_DUPLICATE_MAX_DIGEST_SIZE);
-    if (!bc_core_sha256_finalize(&context, out_digest)) {
-        *out_errno = EINVAL;
-        return false;
-    }
-    *out_errno = 0;
-    return true;
-}
-
-static void bc_duplicate_worker_full_iteration(size_t iteration_index, void* user_argument)
-{
-    bc_duplicate_worker_full_context_t* context = (bc_duplicate_worker_full_context_t*)user_argument;
-    if (bc_duplicate_worker_full_should_stop(context)) {
-        return;
-    }
-    size_t entry_index = context->candidate_indices[iteration_index];
-    bc_duplicate_file_entry_t* entry = &context->entries[entry_index];
-
-    int file_descriptor = open(entry->absolute_path, O_RDONLY | O_NOATIME | O_CLOEXEC);
-    if (file_descriptor < 0 && errno == EPERM) {
-        file_descriptor = open(entry->absolute_path, O_RDONLY | O_CLOEXEC);
-    }
-    if (file_descriptor < 0) {
-        entry->full_hash_computed = true;
-        entry->full_hash_errno = errno;
-        return;
-    }
-
-    bc_allocators_context_t* worker_memory = bc_concurrency_worker_memory();
-    uint8_t stack_buffer[BC_DUPLICATE_FULL_HASH_CHUNK_SIZE];
-    uint8_t* buffer = stack_buffer;
-    void* heap_buffer = NULL;
-    if (worker_memory != NULL) {
-        if (bc_allocators_pool_allocate(worker_memory, BC_DUPLICATE_FULL_HASH_CHUNK_SIZE, &heap_buffer)) {
-            buffer = (uint8_t*)heap_buffer;
-        }
-    }
-
-    int operation_errno = 0;
-    bool ok = false;
-    switch (context->algorithm) {
+    state->algorithm = algorithm;
+    state->failed = false;
+    state->initialised = false;
+    state->xxh3_state = NULL;
+    state->xxh128_state = NULL;
+    switch (algorithm) {
     case BC_DUPLICATE_ALGORITHM_XXH3:
-        ok = bc_duplicate_worker_full_hash_xxh3(file_descriptor, buffer, entry->full_hash, &operation_errno);
+        state->xxh3_state = XXH3_createState();
+        if (state->xxh3_state == NULL) {
+            return false;
+        }
+        XXH3_64bits_reset(state->xxh3_state);
         break;
     case BC_DUPLICATE_ALGORITHM_XXH128:
-        ok = bc_duplicate_worker_full_hash_xxh128(file_descriptor, buffer, entry->full_hash, &operation_errno);
+        state->xxh128_state = XXH3_createState();
+        if (state->xxh128_state == NULL) {
+            return false;
+        }
+        XXH3_128bits_reset(state->xxh128_state);
         break;
     case BC_DUPLICATE_ALGORITHM_SHA256:
-        ok = bc_duplicate_worker_full_hash_sha256(file_descriptor, buffer, entry->full_hash, &operation_errno);
+        if (!bc_core_sha256_init(&state->sha256_context)) {
+            return false;
+        }
         break;
     }
+    state->initialised = true;
+    return true;
+}
 
-    close(file_descriptor);
-    if (heap_buffer != NULL) {
-        bc_allocators_pool_free(worker_memory, heap_buffer);
+static void bc_duplicate_worker_full_consumer_destroy(bc_duplicate_worker_full_consumer_state_t* state)
+{
+    if (state->xxh3_state != NULL) {
+        XXH3_freeState(state->xxh3_state);
+        state->xxh3_state = NULL;
+    }
+    if (state->xxh128_state != NULL) {
+        XXH3_freeState(state->xxh128_state);
+        state->xxh128_state = NULL;
+    }
+    state->initialised = false;
+}
+
+static bool bc_duplicate_worker_full_consumer_callback(void* consumer_context, const void* chunk_data, size_t chunk_size)
+{
+    bc_duplicate_worker_full_consumer_state_t* state = (bc_duplicate_worker_full_consumer_state_t*)consumer_context;
+    switch (state->algorithm) {
+    case BC_DUPLICATE_ALGORITHM_XXH3:
+        XXH3_64bits_update(state->xxh3_state, chunk_data, chunk_size);
+        return true;
+    case BC_DUPLICATE_ALGORITHM_XXH128:
+        XXH3_128bits_update(state->xxh128_state, chunk_data, chunk_size);
+        return true;
+    case BC_DUPLICATE_ALGORITHM_SHA256:
+        if (!bc_core_sha256_update(&state->sha256_context, chunk_data, chunk_size)) {
+            state->failed = true;
+            return false;
+        }
+        return true;
+    }
+    state->failed = true;
+    return false;
+}
+
+static void bc_duplicate_worker_full_consumer_finalize(bc_duplicate_worker_full_consumer_state_t* state,
+                                                       uint8_t out_digest[BC_DUPLICATE_MAX_DIGEST_SIZE])
+{
+    bc_core_zero(out_digest, BC_DUPLICATE_MAX_DIGEST_SIZE);
+    switch (state->algorithm) {
+    case BC_DUPLICATE_ALGORITHM_XXH3: {
+        const XXH64_hash_t digest = XXH3_64bits_digest(state->xxh3_state);
+        bc_core_copy(out_digest, &digest, sizeof(digest));
+        return;
+    }
+    case BC_DUPLICATE_ALGORITHM_XXH128: {
+        const XXH128_hash_t digest = XXH3_128bits_digest(state->xxh128_state);
+        bc_core_copy(out_digest, &digest.high64, sizeof(digest.high64));
+        bc_core_copy(out_digest + sizeof(digest.high64), &digest.low64, sizeof(digest.low64));
+        return;
+    }
+    case BC_DUPLICATE_ALGORITHM_SHA256:
+        if (!bc_core_sha256_finalize(&state->sha256_context, out_digest)) {
+            state->failed = true;
+        }
+        return;
+    }
+}
+
+static bool bc_duplicate_worker_full_ensure_slot(const bc_duplicate_worker_full_dispatch_t* dispatch, bc_allocators_context_t* worker_memory,
+                                                 bc_duplicate_worker_full_slot_t** out_slot)
+{
+    bc_duplicate_worker_full_slot_t* slot = (bc_duplicate_worker_full_slot_t*)bc_concurrency_worker_slot(dispatch->worker_slot_index);
+    if (slot == NULL) {
+        return false;
+    }
+    if (!slot->ring_initialised) {
+        if (!bc_allocators_pool_allocate(worker_memory, bc_duplicate_reader_ring_struct_size(), (void**)&slot->ring)) {
+            return false;
+        }
+        if (!bc_duplicate_reader_ring_init(slot->ring)) {
+            bc_allocators_pool_free(worker_memory, slot->ring);
+            slot->ring = NULL;
+            return false;
+        }
+        slot->ring_initialised = true;
+    }
+    *out_slot = slot;
+    return true;
+}
+
+static void bc_duplicate_worker_full_process_batch(bc_duplicate_worker_full_dispatch_t* dispatch, bc_duplicate_worker_full_slot_t* slot,
+                                                   size_t batch_start, size_t batch_count)
+{
+    for (size_t offset = 0; offset < batch_count; ++offset) {
+        const size_t entry_index = dispatch->candidate_indices[batch_start + offset];
+        bc_duplicate_file_entry_t* entry = &dispatch->entries[entry_index];
+        bc_duplicate_worker_full_consumer_state_t* consumer_state = &slot->consumer_states[offset];
+        if (!bc_duplicate_worker_full_consumer_init(consumer_state, dispatch->algorithm)) {
+            entry->full_hash_computed = true;
+            entry->full_hash_errno = ENOMEM;
+            slot->batch_items[offset].absolute_path = entry->absolute_path;
+            slot->batch_items[offset].file_size = entry->file_size;
+            slot->batch_items[offset].consumer_context = consumer_state;
+            slot->batch_items[offset].success = true;
+            slot->batch_items[offset].errno_value = 0;
+            continue;
+        }
+        slot->batch_items[offset].absolute_path = entry->absolute_path;
+        slot->batch_items[offset].file_size = entry->file_size;
+        slot->batch_items[offset].consumer_context = consumer_state;
+        slot->batch_items[offset].success = false;
+        slot->batch_items[offset].errno_value = 0;
     }
 
-    entry->full_hash_computed = true;
-    entry->full_hash_errno = ok ? 0 : (operation_errno != 0 ? operation_errno : EIO);
+    bc_duplicate_reader_consume_batch(slot->ring, slot->batch_items, batch_count, bc_duplicate_worker_full_consumer_callback);
+
+    for (size_t offset = 0; offset < batch_count; ++offset) {
+        const size_t entry_index = dispatch->candidate_indices[batch_start + offset];
+        bc_duplicate_file_entry_t* entry = &dispatch->entries[entry_index];
+        bc_duplicate_worker_full_consumer_state_t* consumer_state = &slot->consumer_states[offset];
+        const bc_duplicate_reader_batch_item_t* item = &slot->batch_items[offset];
+
+        entry->full_hash_computed = true;
+        if (!consumer_state->initialised) {
+            continue;
+        }
+        if (!item->success || consumer_state->failed) {
+            entry->full_hash_errno = item->errno_value != 0 ? item->errno_value : EIO;
+            bc_duplicate_worker_full_consumer_destroy(consumer_state);
+            continue;
+        }
+        bc_duplicate_worker_full_consumer_finalize(consumer_state, entry->full_hash);
+        entry->full_hash_errno = consumer_state->failed ? EIO : 0;
+        bc_duplicate_worker_full_consumer_destroy(consumer_state);
+    }
+}
+
+static void bc_duplicate_worker_full_iter(size_t iteration_index, void* user_argument)
+{
+    bc_duplicate_worker_full_dispatch_t* dispatch = (bc_duplicate_worker_full_dispatch_t*)user_argument;
+    if (bc_duplicate_worker_full_should_stop(dispatch->signal_handler)) {
+        return;
+    }
+    bc_allocators_context_t* worker_memory = bc_concurrency_worker_memory();
+    if (worker_memory == NULL) {
+        worker_memory = dispatch->main_memory_context;
+    }
+    bc_duplicate_worker_full_slot_t* slot = NULL;
+    if (!bc_duplicate_worker_full_ensure_slot(dispatch, worker_memory, &slot)) {
+        return;
+    }
+    const size_t batch_start = iteration_index * dispatch->batch_size;
+    if (batch_start >= dispatch->candidate_count) {
+        return;
+    }
+    const size_t remaining = dispatch->candidate_count - batch_start;
+    const size_t batch_count = remaining < dispatch->batch_size ? remaining : dispatch->batch_size;
+    bc_duplicate_worker_full_process_batch(dispatch, slot, batch_start, batch_count);
+}
+
+static void bc_duplicate_worker_full_destroy_slot(void* slot_data, size_t worker_index, void* arg)
+{
+    BC_UNUSED(worker_index);
+    BC_UNUSED(arg);
+    bc_duplicate_worker_full_slot_t* slot = (bc_duplicate_worker_full_slot_t*)slot_data;
+    if (slot->ring_initialised && slot->ring != NULL) {
+        bc_duplicate_reader_ring_destroy(slot->ring);
+        slot->ring_initialised = false;
+    }
 }
 
 bool bc_duplicate_worker_full_pass(bc_allocators_context_t* memory_context, bc_concurrency_context_t* concurrency_context,
@@ -208,7 +278,6 @@ bool bc_duplicate_worker_full_pass(bc_allocators_context_t* memory_context, bc_c
     if (!bc_allocators_pool_allocate(memory_context, total_candidates * sizeof(size_t), (void**)&candidate_indices)) {
         return false;
     }
-
     size_t cursor = 0;
     for (size_t group_index = 0; group_index < candidate_group_count; ++group_index) {
         const bc_duplicate_group_t* group = &candidate_groups[group_index];
@@ -217,24 +286,40 @@ bool bc_duplicate_worker_full_pass(bc_allocators_context_t* memory_context, bc_c
         }
     }
 
-    bc_duplicate_worker_full_context_t context = {
+    const bc_concurrency_slot_config_t slot_config = {
+        .size = sizeof(bc_duplicate_worker_full_slot_t),
+        .init = NULL,
+        .destroy = bc_duplicate_worker_full_destroy_slot,
+        .arg = NULL,
+    };
+    size_t worker_slot_index = 0;
+    if (!bc_concurrency_register_slot(concurrency_context, &slot_config, &worker_slot_index)) {
+        bc_allocators_pool_free(memory_context, candidate_indices);
+        return false;
+    }
+
+    bc_duplicate_worker_full_dispatch_t dispatch = {
         .entries = entries,
         .candidate_indices = candidate_indices,
         .candidate_count = total_candidates,
         .signal_handler = signal_handler,
         .algorithm = algorithm,
+        .batch_size = BC_DUPLICATE_FULL_BATCH_ITEM_CAPACITY,
+        .worker_slot_index = worker_slot_index,
+        .main_memory_context = memory_context,
     };
 
+    const size_t batch_count = (total_candidates + dispatch.batch_size - 1) / dispatch.batch_size;
     bool dispatch_ok = true;
     if (force_single_thread) {
-        for (size_t iteration_index = 0; iteration_index < total_candidates; ++iteration_index) {
-            if (bc_duplicate_worker_full_should_stop(&context)) {
+        for (size_t batch_index = 0; batch_index < batch_count; ++batch_index) {
+            if (bc_duplicate_worker_full_should_stop(signal_handler)) {
                 break;
             }
-            bc_duplicate_worker_full_iteration(iteration_index, &context);
+            bc_duplicate_worker_full_iter(batch_index, &dispatch);
         }
     } else {
-        dispatch_ok = bc_concurrency_for(concurrency_context, 0, total_candidates, 1, bc_duplicate_worker_full_iteration, &context);
+        dispatch_ok = bc_concurrency_for(concurrency_context, 0, batch_count, 1, bc_duplicate_worker_full_iter, &dispatch);
     }
 
     bc_allocators_pool_free(memory_context, candidate_indices);

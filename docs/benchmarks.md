@@ -63,13 +63,33 @@ mem_bw=34.68 GB/s  parallel_startup=37.7 us  per_file=3.55 us
 | bc-duplicate sha256 | 0.076 s | 0.000 | 2.24× |
 | jdupes -rmS | 0.077 s | 0.000 | 2.26× |
 
-### `/var/benchmarks/nested` (724 414 files, 13 GB) — single-run wall
+### `/var/benchmarks/nested` (724 414 files, 13 GB) — perf-stat, median of 3 warm runs
 
-| Tool | wall | rel |
-|---|---:|---:|
-| bc-duplicate xxh3 | 1.84 s | 1.00× |
-| fclones | 2.63 s | 1.43× |
-| jdupes -rmS | 32.40 s | 17.61× |
+Each tool was run with its own preferred parallelism: bc-duplicate uses
+the 8 physical cores (SMT off-by-design), fclones uses 16 SMT threads
+(default), jdupes is single-threaded (no parallelism flag).
+
+| Tool | wall | task-clock | IPC | branch-miss | cache-miss | RSS peak |
+|---|---:|---:|---:|---:|---:|---:|
+| bc-duplicate xxh3 | **1.79 s** | 7.47 s | 0.94 | 9.08 % | 8.41 % | 350 MB |
+| fclones | 2.37 s | 22.07 s | 1.09 | 3.54 % | 9.71 % | 151 MB |
+| jdupes -rmS | 32.30 s | 32.31 s | 1.95 | 2.28 % | 9.01 % | 140 MB |
+
+bc-duplicate executes ~3.2x fewer instructions than fclones for the
+same corpus: algorithmic win from the size+head-hash pre-grouping.
+fclones spreads work across 2x the threads (SMT) but the higher
+task-clock more than offsets the parallelism gain.
+
+Per-tool observations:
+- bc-duplicate IPC 0.94 is the lowest — branch mispredictions (9 %)
+  point at the algorithm-switching `consumer_callback` in the hot loop.
+  Specialising by algo (one consumer per xxh3/xxh128/sha256) would
+  remove a per-chunk indirect call.
+- RSS is dominated by io_uring slot buffers
+  (32 slots * 128 KB * 8 workers = 32 MB * 8 = 256 MB just for the
+  rings). Halving slot buffer to 64 KB would shave ~128 MB.
+- jdupes' high IPC (1.95) is misleading: it runs on a single core, the
+  pipeline is fully predictable but the wall is ~18x longer.
 
 ### `/var/benchmarks` (767 312 files, 19 GB, with `--hidden`) — single-run wall
 
@@ -83,16 +103,35 @@ Correctness identical between bc-duplicate and jdupes on
 `/var/benchmarks --hidden`: both report 195 670 duplicate groups,
 564 618 duplicate files, 11 362 544 541 wasted bytes.
 
+## Parallelism / fairness disclosure
+
+The three tools have different default parallelism strategies and we
+deliberately let each use its own:
+
+| Tool | Threads | Notes |
+|---|---|---|
+| bc-duplicate | 8 (1 per **physical** core) | SMT not used; bc-concurrency pins one worker per physical core. `--threads=N` overrides. |
+| fclones | 16 (= `num_cpus`, includes SMT) | default; `--threads N` overrides. |
+| jdupes | 1 | no parallelism flag. |
+
+We did **not** force fclones down to 8 threads in the table above
+because that does not match how a user runs it in practice; on a
+dedicated benchmark machine SMT is part of the tool's deployed perf
+profile. To compare on equal threads, run
+`fclones group --threads 8 <path>`.
+
 ## Reading the numbers
 
 - **Small corpora (<20k files)**: fclones wins (low constant overhead).
   bc-duplicate beats jdupes by 3-10×.
 - **Mid (>500k files, mostly small files)**: bc-duplicate beats fclones
-  warm cache thanks to the parallel-walk + adaptive dispatch.
-- **Very large (>1M files / many GB)**: I/O-bound — fclones reclaims the
-  lead on the 19 GB corpus by ~30 % (its prefix/suffix scan reads less
-  data than our streaming xxh3). bc-duplicate stays 7-10× faster than
-  jdupes on every corpus tested.
+  warm cache thanks to the parallel-walk + adaptive dispatch + io_uring
+  batched openat/read/close per worker (iter 7).
+- **Very large (>1M files / many GB)**: I/O-bound. Numbers vary across
+  runs because page-cache eviction kicks in. Median wall on three warm
+  runs of `/var/benchmarks --hidden` (19 GB):
+  bc-duplicate ~7 s, fclones ~3 s. Here fclones' prefix/suffix scan
+  reads strictly less data than our streaming xxh3 over the whole file.
 
 ## Why xxh3 by default
 
