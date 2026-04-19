@@ -6,7 +6,6 @@
 #include "bc_core.h"
 
 #include <stdlib.h>
-#include <string.h>
 
 typedef struct bc_duplicate_full_hash_compare_context {
     size_t digest_size;
@@ -18,7 +17,9 @@ static int bc_duplicate_grouping_full_hash_compare_r(const void* lhs, const void
     const bc_duplicate_file_entry_t* left = (const bc_duplicate_file_entry_t*)lhs;
     const bc_duplicate_file_entry_t* right = (const bc_duplicate_file_entry_t*)rhs;
     const bc_duplicate_full_hash_compare_context_t* context = (const bc_duplicate_full_hash_compare_context_t*)user;
-    return memcmp(left->full_hash, right->full_hash, context->digest_size);
+    int result = 0;
+    bc_core_compare(left->full_hash, right->full_hash, context->digest_size, &result);
+    return result;
 }
 
 bool bc_duplicate_grouping_by_full_hash(bc_allocators_context_t* memory_context, bc_duplicate_file_entry_t* entries,
@@ -52,7 +53,15 @@ bool bc_duplicate_grouping_by_full_hash(bc_allocators_context_t* memory_context,
         while (cursor < run_length) {
             size_t sub_start = cursor;
             cursor++;
-            while (cursor < run_length && memcmp(run_begin[cursor].full_hash, run_begin[sub_start].full_hash, digest_size) == 0) {
+            for (;;) {
+                if (cursor >= run_length) {
+                    break;
+                }
+                bool same_digest = false;
+                bc_core_equal(run_begin[cursor].full_hash, run_begin[sub_start].full_hash, digest_size, &same_digest);
+                if (!same_digest) {
+                    break;
+                }
                 cursor++;
             }
             size_t sub_length = cursor - sub_start;

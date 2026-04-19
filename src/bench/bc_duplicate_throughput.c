@@ -131,13 +131,13 @@ static double bc_duplicate_throughput_measure_memory_bandwidth(uint8_t* buffer)
     const uint8_t* source_region = buffer;
     uint8_t* destination_region = buffer + half_size;
 
-    memcpy(destination_region, source_region, half_size);
+    bc_core_copy(destination_region, source_region, half_size);
     bc_duplicate_throughput_benchmark_sink += destination_region[0];
 
     double samples[BC_DUPLICATE_THROUGHPUT_MEMORY_ITERATION_COUNT];
     for (size_t iteration_index = 0; iteration_index < BC_DUPLICATE_THROUGHPUT_MEMORY_ITERATION_COUNT; ++iteration_index) {
         double start_seconds = bc_duplicate_throughput_monotonic_seconds();
-        memcpy(destination_region, source_region, half_size);
+        bc_core_copy(destination_region, source_region, half_size);
         double end_seconds = bc_duplicate_throughput_monotonic_seconds();
         samples[iteration_index] = end_seconds - start_seconds;
         bc_duplicate_throughput_benchmark_sink += destination_region[0];

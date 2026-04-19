@@ -12,7 +12,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/utsname.h>
@@ -31,7 +30,13 @@ static bool bc_duplicate_throughput_cache_read_cpuinfo_field(const char* field_n
     size_t field_name_length = bc_duplicate_strings_length(field_name);
     bool found = false;
     while (fgets(line_buffer, sizeof(line_buffer), stream) != NULL) {
-        if (strncmp(line_buffer, field_name, field_name_length) != 0) {
+        size_t line_buffer_length = bc_duplicate_strings_length(line_buffer);
+        if (line_buffer_length < field_name_length) {
+            continue;
+        }
+        bool prefix_matches = false;
+        bc_core_equal(line_buffer, field_name, field_name_length, &prefix_matches);
+        if (!prefix_matches) {
             continue;
         }
         const char* cursor = line_buffer + field_name_length;
@@ -111,18 +116,18 @@ bool bc_duplicate_throughput_cache_load(const char* absolute_cache_path, bc_dupl
 
     char line_buffer[BC_DUPLICATE_THROUGHPUT_CACHE_LINE_CAPACITY];
     while (fgets(line_buffer, sizeof(line_buffer), stream) != NULL) {
-        size_t line_length = strlen(line_buffer);
+        size_t line_length = bc_duplicate_strings_length(line_buffer);
         if (line_length > 0 && line_buffer[line_length - 1] == '\n') {
             line_buffer[line_length - 1] = '\0';
             line_length--;
         }
-        char* separator_position = strchr(line_buffer, '=');
-        if (separator_position == NULL) {
+        size_t separator_offset = 0;
+        if (!bc_core_find_byte(line_buffer, line_length, (unsigned char)'=', &separator_offset)) {
             continue;
         }
-        *separator_position = '\0';
+        line_buffer[separator_offset] = '\0';
         const char* key = line_buffer;
-        const char* value = separator_position + 1;
+        const char* value = line_buffer + separator_offset + 1;
 
         if (bc_duplicate_strings_equal(key, "cpu_model")) {
             snprintf(cached_cpu_model, sizeof(cached_cpu_model), "%s", value);
@@ -173,11 +178,12 @@ static bool bc_duplicate_throughput_cache_ensure_parent_directory(const char* ab
 {
     char directory_path[BC_DUPLICATE_THROUGHPUT_CACHE_LINE_CAPACITY];
     snprintf(directory_path, sizeof(directory_path), "%s", absolute_cache_path);
-    char* last_slash = strrchr(directory_path, '/');
-    if (last_slash == NULL || last_slash == directory_path) {
+    size_t directory_path_length = bc_duplicate_strings_length(directory_path);
+    size_t last_slash_offset = 0;
+    if (!bc_core_find_last_byte(directory_path, directory_path_length, (unsigned char)'/', &last_slash_offset) || last_slash_offset == 0) {
         return true;
     }
-    *last_slash = '\0';
+    directory_path[last_slash_offset] = '\0';
     if (mkdir(directory_path, 0755) == 0) {
         return true;
     }

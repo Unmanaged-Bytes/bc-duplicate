@@ -10,6 +10,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "bc_duplicate_strings_internal.h"
+
 #define BC_DUPLICATE_ERROR_INITIAL_CAPACITY 16
 #define BC_DUPLICATE_ERROR_MAX_CAPACITY     65536
 
@@ -57,7 +59,7 @@ void bc_duplicate_error_collector_destroy(bc_allocators_context_t* memory_contex
 bool bc_duplicate_error_collector_record(bc_duplicate_error_collector_t* collector, bc_allocators_context_t* memory_context, const char* path,
                                          const char* stage, int errno_value)
 {
-    size_t path_length = strlen(path);
+    size_t path_length = bc_duplicate_strings_length(path);
     char* path_copy = NULL;
     if (!bc_allocators_pool_allocate(memory_context, path_length + 1, (void**)&path_copy)) {
         return false;

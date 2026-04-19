@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 
 #include "bc_duplicate_filter_internal.h"
+#include "bc_duplicate_strings_internal.h"
 
 #include "bc_allocators_pool.h"
 #include "bc_core.h"
 
 #include <fnmatch.h>
 #include <stddef.h>
-#include <string.h>
 
 struct bc_duplicate_filter {
     char** include_patterns;
@@ -28,7 +28,7 @@ static bool bc_duplicate_filter_count_and_split(bc_allocators_context_t* memory_
         return true;
     }
 
-    size_t list_length = strlen(list);
+    size_t list_length = bc_duplicate_strings_length(list);
     char* buffer = NULL;
     if (!bc_allocators_pool_allocate(memory_context, list_length + 1, (void**)&buffer)) {
         return false;

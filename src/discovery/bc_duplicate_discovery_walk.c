@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "bc_duplicate_discovery_internal.h"
+#include "bc_duplicate_strings_internal.h"
 
 #include "bc_allocators_pool.h"
 #include "bc_core.h"
@@ -13,7 +14,6 @@
 #include <fcntl.h>
 #include <glob.h>
 #include <stddef.h>
-#include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -127,7 +127,7 @@ static bool bc_duplicate_walk_handle_entry(bc_duplicate_walk_state_t* state, int
     }
 
     char child_path_buffer[BC_DUPLICATE_WALK_PATH_BUFFER_SIZE];
-    size_t entry_name_length = strlen(entry_name);
+    size_t entry_name_length = bc_duplicate_strings_length(entry_name);
     size_t child_path_length = 0;
     if (!bc_io_file_path_join(child_path_buffer, sizeof(child_path_buffer), directory_path, directory_path_length, entry_name, entry_name_length,
                               &child_path_length)) {
@@ -215,8 +215,8 @@ static bool bc_duplicate_walk_process_input_path(bc_duplicate_walk_state_t* stat
     }
 
     if (S_ISREG(input_stat_buffer.st_mode)) {
-        return bc_duplicate_walk_append_entry(state, input_path, strlen(input_path), (size_t)input_stat_buffer.st_size, input_stat_buffer.st_dev,
-                                              input_stat_buffer.st_ino);
+        return bc_duplicate_walk_append_entry(state, input_path, bc_duplicate_strings_length(input_path), (size_t)input_stat_buffer.st_size,
+                                              input_stat_buffer.st_dev, input_stat_buffer.st_ino);
     }
 
     if (S_ISDIR(input_stat_buffer.st_mode)) {
@@ -249,7 +249,7 @@ static bool bc_duplicate_walk_process_input_path(bc_duplicate_walk_state_t* stat
             return false;
         }
 
-        size_t input_path_length = strlen(input_path);
+        size_t input_path_length = bc_duplicate_strings_length(input_path);
         while (input_path_length > 1 && input_path[input_path_length - 1] == '/') {
             input_path_length -= 1;
         }
@@ -277,7 +277,7 @@ static bool bc_duplicate_walk_expand_glob(bc_duplicate_walk_state_t* state, cons
     bool any_match = false;
     for (size_t index = 0; index < glob_buffer.gl_pathc; ++index) {
         const char* matched_path = glob_buffer.gl_pathv[index];
-        if (strcmp(matched_path, pattern) == 0) {
+        if (bc_duplicate_strings_equal(matched_path, pattern)) {
             bool pattern_has_metacharacter = false;
             bc_duplicate_discovery_glob_contains_metacharacter(pattern, &pattern_has_metacharacter);
             if (pattern_has_metacharacter && glob_buffer.gl_pathc == 1) {
