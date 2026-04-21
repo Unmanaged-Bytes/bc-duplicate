@@ -35,7 +35,7 @@ typedef struct bc_duplicate_walk_parallel_queue_entry {
 
 typedef struct bc_duplicate_walk_parallel_worker_slot {
     bc_containers_vector_t* file_entries;
-    bc_duplicate_error_collector_t* errors;
+    bc_runtime_error_collector_t* errors;
 } bc_duplicate_walk_parallel_worker_slot_t;
 
 typedef struct bc_duplicate_walk_parallel_shared {
@@ -76,7 +76,7 @@ static bool bc_duplicate_walk_parallel_ensure_worker_slot(const bc_duplicate_wal
         }
     }
     if (slot->errors == NULL) {
-        if (!bc_duplicate_error_collector_create(worker_memory, &slot->errors)) {
+        if (!bc_runtime_error_collector_create(worker_memory, &slot->errors)) {
             return false;
         }
     }
@@ -124,7 +124,7 @@ static void bc_duplicate_walk_parallel_process_directory(bc_duplicate_walk_paral
     }
     int directory_file_descriptor = open(directory_path, open_flags);
     if (directory_file_descriptor < 0) {
-        bc_duplicate_error_collector_record(worker_slot->errors, worker_memory, directory_path, "open", errno);
+        bc_runtime_error_collector_append(worker_slot->errors, worker_memory, directory_path, "open", errno);
         return;
     }
 
@@ -135,7 +135,7 @@ static void bc_duplicate_walk_parallel_process_directory(bc_duplicate_walk_paral
         bc_io_dirent_entry_t current_entry;
         bool has_entry = false;
         if (!bc_io_dirent_reader_next(&dirent_reader, &current_entry, &has_entry)) {
-            bc_duplicate_error_collector_record(worker_slot->errors, worker_memory, directory_path, "getdents64", dirent_reader.last_errno);
+            bc_runtime_error_collector_append(worker_slot->errors, worker_memory, directory_path, "getdents64", dirent_reader.last_errno);
             break;
         }
         if (!has_entry) {
@@ -151,14 +151,14 @@ static void bc_duplicate_walk_parallel_process_directory(bc_duplicate_walk_paral
         size_t child_path_length = 0;
         if (!bc_io_file_path_join(child_path_buffer, sizeof(child_path_buffer), directory_path, directory_path_length, entry_name,
                                   entry_name_length, &child_path_length)) {
-            bc_duplicate_error_collector_record(worker_slot->errors, worker_memory, directory_path, "path-too-long", ENAMETOOLONG);
+            bc_runtime_error_collector_append(worker_slot->errors, worker_memory, directory_path, "path-too-long", ENAMETOOLONG);
             continue;
         }
 
         int stat_flags = shared->options->follow_symlinks ? 0 : AT_SYMLINK_NOFOLLOW;
         struct stat child_stat_buffer;
         if (fstatat(directory_file_descriptor, entry_name, &child_stat_buffer, stat_flags) != 0) {
-            bc_duplicate_error_collector_record(worker_slot->errors, worker_memory, child_path_buffer, "stat", errno);
+            bc_runtime_error_collector_append(worker_slot->errors, worker_memory, child_path_buffer, "stat", errno);
             continue;
         }
 
@@ -172,7 +172,7 @@ static void bc_duplicate_walk_parallel_process_directory(bc_duplicate_walk_paral
             }
             if (!bc_duplicate_walk_parallel_append_file_entry(worker_memory, worker_slot->file_entries, child_path_buffer, child_path_length,
                                                               resolved_file_size, child_stat_buffer.st_dev, child_stat_buffer.st_ino)) {
-                bc_duplicate_error_collector_record(worker_slot->errors, worker_memory, child_path_buffer, "enqueue", ENOMEM);
+                bc_runtime_error_collector_append(worker_slot->errors, worker_memory, child_path_buffer, "enqueue", ENOMEM);
             }
             continue;
         }
@@ -267,12 +267,12 @@ static void bc_duplicate_walk_parallel_merge_worker_slot(void* slot_data, size_t
         }
     }
     if (slot->errors != NULL) {
-        bc_duplicate_error_collector_flush_to_stderr(slot->errors);
+        bc_runtime_error_collector_flush_to_stderr(slot->errors, "bc-duplicate");
     }
 }
 
 static bool bc_duplicate_walk_parallel_append_root_file(bc_allocators_context_t* memory_context, bc_containers_vector_t* destination_entries,
-                                                        bc_duplicate_error_collector_t* errors,
+                                                        bc_runtime_error_collector_t* errors,
                                                         const bc_duplicate_discovery_options_t* options, const char* input_path, size_t file_size,
                                                         dev_t device_id, ino_t inode_number)
 {
@@ -282,7 +282,7 @@ static bool bc_duplicate_walk_parallel_append_root_file(bc_allocators_context_t*
     size_t input_path_length = bc_duplicate_strings_length(input_path);
     char* path_copy = NULL;
     if (!bc_allocators_pool_allocate(memory_context, input_path_length + 1, (void**)&path_copy)) {
-        bc_duplicate_error_collector_record(errors, memory_context, input_path, "allocate", ENOMEM);
+        bc_runtime_error_collector_append(errors, memory_context, input_path, "allocate", ENOMEM);
         return false;
     }
     bc_core_copy(path_copy, input_path, input_path_length);
@@ -297,13 +297,13 @@ static bool bc_duplicate_walk_parallel_append_root_file(bc_allocators_context_t*
     };
     if (!bc_containers_vector_push(memory_context, destination_entries, &entry)) {
         bc_allocators_pool_free(memory_context, path_copy);
-        bc_duplicate_error_collector_record(errors, memory_context, input_path, "enqueue", ENOMEM);
+        bc_runtime_error_collector_append(errors, memory_context, input_path, "enqueue", ENOMEM);
         return false;
     }
     return true;
 }
 
-static bool bc_duplicate_walk_parallel_push_root_directory(bc_duplicate_walk_parallel_shared_t* shared, bc_duplicate_error_collector_t* errors,
+static bool bc_duplicate_walk_parallel_push_root_directory(bc_duplicate_walk_parallel_shared_t* shared, bc_runtime_error_collector_t* errors,
                                                            const char* input_path)
 {
     size_t input_path_length = bc_duplicate_strings_length(input_path);
@@ -311,7 +311,7 @@ static bool bc_duplicate_walk_parallel_push_root_directory(bc_duplicate_walk_par
         input_path_length -= 1;
     }
     if (input_path_length >= BC_IO_MAX_PATH_LENGTH) {
-        bc_duplicate_error_collector_record(errors, shared->main_memory_context, input_path, "path-too-long", ENAMETOOLONG);
+        bc_runtime_error_collector_append(errors, shared->main_memory_context, input_path, "path-too-long", ENAMETOOLONG);
         return false;
     }
 
@@ -324,7 +324,7 @@ static bool bc_duplicate_walk_parallel_push_root_directory(bc_duplicate_walk_par
     atomic_fetch_add_explicit(&shared->outstanding_directory_count, 1, memory_order_relaxed);
     if (!bc_concurrency_queue_push(shared->directory_queue, &queue_entry)) {
         atomic_fetch_sub_explicit(&shared->outstanding_directory_count, 1, memory_order_relaxed);
-        bc_duplicate_error_collector_record(errors, shared->main_memory_context, input_path, "enqueue", ENOSPC);
+        bc_runtime_error_collector_append(errors, shared->main_memory_context, input_path, "enqueue", ENOSPC);
         return false;
     }
     return true;
@@ -332,12 +332,12 @@ static bool bc_duplicate_walk_parallel_push_root_directory(bc_duplicate_walk_par
 
 static void bc_duplicate_walk_parallel_process_input_path(bc_duplicate_walk_parallel_shared_t* shared,
                                                           bc_containers_vector_t* destination_entries,
-                                                          bc_duplicate_error_collector_t* errors, const char* input_path)
+                                                          bc_runtime_error_collector_t* errors, const char* input_path)
 {
     int stat_flags = shared->options->follow_symlinks ? 0 : AT_SYMLINK_NOFOLLOW;
     struct stat input_stat_buffer;
     if (fstatat(AT_FDCWD, input_path, &input_stat_buffer, stat_flags) != 0) {
-        bc_duplicate_error_collector_record(errors, shared->main_memory_context, input_path, "stat", errno);
+        bc_runtime_error_collector_append(errors, shared->main_memory_context, input_path, "stat", errno);
         return;
     }
     if (S_ISREG(input_stat_buffer.st_mode)) {
@@ -354,20 +354,20 @@ static void bc_duplicate_walk_parallel_process_input_path(bc_duplicate_walk_para
         }
         bc_duplicate_walk_parallel_push_root_directory(shared, errors, input_path);
     } else if (S_ISLNK(input_stat_buffer.st_mode)) {
-        bc_duplicate_error_collector_record(errors, shared->main_memory_context, input_path, "skip-symlink", ELOOP);
+        bc_runtime_error_collector_append(errors, shared->main_memory_context, input_path, "skip-symlink", ELOOP);
     } else {
-        bc_duplicate_error_collector_record(errors, shared->main_memory_context, input_path, "skip-other", EINVAL);
+        bc_runtime_error_collector_append(errors, shared->main_memory_context, input_path, "skip-other", EINVAL);
     }
 }
 
 static void bc_duplicate_walk_parallel_expand_glob(bc_duplicate_walk_parallel_shared_t* shared, bc_containers_vector_t* destination_entries,
-                                                   bc_duplicate_error_collector_t* errors, const char* pattern)
+                                                   bc_runtime_error_collector_t* errors, const char* pattern)
 {
     glob_t glob_buffer;
     int glob_flags = GLOB_NOSORT | GLOB_NOCHECK | GLOB_NOMAGIC;
     int glob_result = glob(pattern, glob_flags, NULL, &glob_buffer);
     if (glob_result != 0) {
-        bc_duplicate_error_collector_record(errors, shared->main_memory_context, pattern, "glob", EINVAL);
+        bc_runtime_error_collector_append(errors, shared->main_memory_context, pattern, "glob", EINVAL);
         globfree(&glob_buffer);
         return;
     }
@@ -378,7 +378,7 @@ static void bc_duplicate_walk_parallel_expand_glob(bc_duplicate_walk_parallel_sh
 }
 
 bool bc_duplicate_discovery_expand_parallel(bc_allocators_context_t* memory_context, bc_concurrency_context_t* concurrency_context,
-                                            bc_containers_vector_t* entries, bc_duplicate_error_collector_t* errors,
+                                            bc_containers_vector_t* entries, bc_runtime_error_collector_t* errors,
                                             bc_concurrency_signal_handler_t* signal_handler, const bc_duplicate_filter_t* filter,
                                             const bc_duplicate_discovery_options_t* options, const char* const* input_paths,
                                             size_t input_count)

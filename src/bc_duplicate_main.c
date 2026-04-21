@@ -3,7 +3,7 @@
 #include "bc_duplicate_cli_internal.h"
 #include "bc_duplicate_discovery_internal.h"
 #include "bc_duplicate_dispatch_decision_internal.h"
-#include "bc_duplicate_error_internal.h"
+#include "bc_runtime_error_collector.h"
 #include "bc_duplicate_filter_internal.h"
 #include "bc_duplicate_grouping_internal.h"
 #include "bc_duplicate_output_internal.h"
@@ -41,7 +41,7 @@ typedef struct bc_duplicate_application_state {
     bc_duplicate_cli_options_t cli_options;
     bc_containers_vector_t* entries;
     bc_duplicate_filter_t* filter;
-    bc_duplicate_error_collector_t* errors;
+    bc_runtime_error_collector_t* errors;
     int exit_code;
 } bc_duplicate_application_state_t;
 
@@ -55,7 +55,7 @@ static bool bc_duplicate_application_init(const bc_runtime_t* application, void*
         return false;
     }
 
-    if (!bc_duplicate_error_collector_create(memory_context, &state->errors)) {
+    if (!bc_runtime_error_collector_create(memory_context, &state->errors)) {
         state->exit_code = 1;
         return false;
     }
@@ -130,10 +130,10 @@ static bool bc_duplicate_application_run(const bc_runtime_t* application, void* 
         return false;
     }
 
-    bc_duplicate_error_collector_flush_to_stderr(state->errors);
+    bc_runtime_error_collector_flush_to_stderr(state->errors, "bc-duplicate");
 
     size_t entry_count = bc_containers_vector_length(state->entries);
-    size_t error_count = bc_duplicate_error_collector_count(state->errors);
+    size_t error_count = bc_runtime_error_collector_count(state->errors);
     fprintf(stderr, "bc-duplicate: discovery: %zu file(s) found, %zu error(s)\n", entry_count, error_count);
 
     if (entry_count == 0) {
@@ -356,7 +356,7 @@ static void bc_duplicate_application_cleanup(const bc_runtime_t* application, vo
         state->entries = NULL;
     }
     if (state->errors != NULL) {
-        bc_duplicate_error_collector_destroy(memory_context, state->errors);
+        bc_runtime_error_collector_destroy(memory_context, state->errors);
         state->errors = NULL;
     }
 }

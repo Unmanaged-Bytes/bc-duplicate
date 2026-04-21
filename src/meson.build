@@ -15,7 +15,6 @@ bc_duplicate_sources = [
   'discovery/bc_duplicate_discovery_glob.c',
   'discovery/bc_duplicate_discovery_walk.c',
   'discovery/bc_duplicate_discovery_walk_parallel.c',
-  'error/bc_duplicate_error_collector.c',
   'filter/bc_duplicate_filter.c',
   'grouping/bc_duplicate_grouping_by_size.c',
   'grouping/bc_duplicate_grouping_by_fast_hash.c',

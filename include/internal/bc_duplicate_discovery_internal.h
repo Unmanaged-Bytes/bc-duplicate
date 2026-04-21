@@ -3,7 +3,7 @@
 #ifndef BC_DUPLICATE_DISCOVERY_INTERNAL_H
 #define BC_DUPLICATE_DISCOVERY_INTERNAL_H
 
-#include "bc_duplicate_error_internal.h"
+#include "bc_runtime_error_collector.h"
 #include "bc_duplicate_filter_internal.h"
 #include "bc_duplicate_types_internal.h"
 
@@ -28,12 +28,12 @@ bool bc_duplicate_discovery_glob_contains_metacharacter(const char* pattern, boo
 bool bc_duplicate_discovery_path_is_pseudo_filesystem(const char* path, bool* out_is_pseudo);
 
 bool bc_duplicate_discovery_expand(bc_allocators_context_t* memory_context, bc_containers_vector_t* entries,
-                                   bc_duplicate_error_collector_t* errors, bc_concurrency_signal_handler_t* signal_handler,
+                                   bc_runtime_error_collector_t* errors, bc_concurrency_signal_handler_t* signal_handler,
                                    const bc_duplicate_filter_t* filter, const bc_duplicate_discovery_options_t* options,
                                    const char* const* input_paths, size_t input_count);
 
 bool bc_duplicate_discovery_expand_parallel(bc_allocators_context_t* memory_context, bc_concurrency_context_t* concurrency_context,
-                                            bc_containers_vector_t* entries, bc_duplicate_error_collector_t* errors,
+                                            bc_containers_vector_t* entries, bc_runtime_error_collector_t* errors,
                                             bc_concurrency_signal_handler_t* signal_handler, const bc_duplicate_filter_t* filter,
                                             const bc_duplicate_discovery_options_t* options, const char* const* input_paths,
                                             size_t input_count);
