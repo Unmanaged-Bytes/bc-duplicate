@@ -1,3 +1,19 @@
+bc-duplicate (1.0.1-1) stable; urgency=medium
+
+  * perf(discovery): switch walk_parallel to raw syscall(SYS_getdents64).
+    On warm cache /var/benchmarks, this cuts the discovery-only phase
+    from 0.384 s to 0.345 s (−10%) and the --include='*.c' scenario
+    from 1.375 s to 1.072 s (−22%). The 64-byte worker_slot padding
+    experimented for bc-hash was evaluated here and regressed +7% on
+    this workload, so it was not applied. Correctness: every file in
+    every sampled duplicate group still shares the same sha256sum.
+  * refactor: consume libbc-io 1.1.0 dirent_reader and libbc-runtime
+    1.1.0 error_collector; drop internal duplicates.
+  * Build-Depends: libbc-io-dev >= 1.1.0, libbc-runtime-dev >= 1.1.0,
+    libbc-allocators-dev >= 1.1.0.
+
+ -- Younes Benmoussa <younes.benmoussa@pm.me>  Tue, 21 Apr 2026 22:00:00 +0000
+
 bc-duplicate (1.0.0-1) stable; urgency=medium
 
   * Initial release.
