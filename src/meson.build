@@ -12,6 +12,7 @@ bc_duplicate_dispatch_decision_sources = files(
 bc_duplicate_sources = [
   'bc_duplicate_main.c',
   'cli/bc_duplicate_cli_spec.c',
+  'discovery/bc_duplicate_dirent.c',
   'discovery/bc_duplicate_discovery_glob.c',
   'discovery/bc_duplicate_discovery_walk.c',
   'discovery/bc_duplicate_discovery_walk_parallel.c',

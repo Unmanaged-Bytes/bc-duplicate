@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 
+#include "bc_duplicate_dirent_internal.h"
 #include "bc_duplicate_discovery_internal.h"
 #include "bc_duplicate_strings_internal.h"
 
@@ -126,41 +127,31 @@ static void bc_duplicate_walk_parallel_process_directory(bc_duplicate_walk_paral
         bc_duplicate_error_collector_record(worker_slot->errors, worker_memory, directory_path, "open", errno);
         return;
     }
-    int duplicated_file_descriptor = dup(directory_file_descriptor);
-    if (duplicated_file_descriptor < 0) {
-        bc_duplicate_error_collector_record(worker_slot->errors, worker_memory, directory_path, "dup", errno);
-        close(directory_file_descriptor);
-        return;
-    }
-    DIR* directory_stream = fdopendir(duplicated_file_descriptor);
-    if (directory_stream == NULL) {
-        close(duplicated_file_descriptor);
-        close(directory_file_descriptor);
-        bc_duplicate_error_collector_record(worker_slot->errors, worker_memory, directory_path, "fdopendir", errno);
-        return;
-    }
 
-    const struct dirent* directory_entry = NULL;
-    errno = 0;
-    while ((directory_entry = readdir(directory_stream)) != NULL) {
-        const char* entry_name = directory_entry->d_name;
-        if (entry_name[0] == '.' &&
-            (entry_name[1] == '\0' || (entry_name[1] == '.' && entry_name[2] == '\0'))) {
-            errno = 0;
-            continue;
+    bc_duplicate_dirent_reader_t dirent_reader;
+    bc_duplicate_dirent_reader_init(&dirent_reader, directory_file_descriptor);
+
+    for (;;) {
+        bc_duplicate_dirent_entry_t current_entry;
+        bool has_entry = false;
+        if (!bc_duplicate_dirent_reader_next(&dirent_reader, &current_entry, &has_entry)) {
+            bc_duplicate_error_collector_record(worker_slot->errors, worker_memory, directory_path, "getdents64", dirent_reader.last_errno);
+            break;
         }
+        if (!has_entry) {
+            break;
+        }
+        const char* entry_name = current_entry.name;
         if (!shared->options->include_hidden && entry_name[0] == '.') {
-            errno = 0;
             continue;
         }
 
-        size_t entry_name_length = bc_duplicate_strings_length(entry_name);
+        size_t entry_name_length = current_entry.name_length;
         char child_path_buffer[BC_IO_MAX_PATH_LENGTH];
         size_t child_path_length = 0;
         if (!bc_io_file_path_join(child_path_buffer, sizeof(child_path_buffer), directory_path, directory_path_length, entry_name,
                                   entry_name_length, &child_path_length)) {
             bc_duplicate_error_collector_record(worker_slot->errors, worker_memory, directory_path, "path-too-long", ENAMETOOLONG);
-            errno = 0;
             continue;
         }
 
@@ -168,35 +159,29 @@ static void bc_duplicate_walk_parallel_process_directory(bc_duplicate_walk_paral
         struct stat child_stat_buffer;
         if (fstatat(directory_file_descriptor, entry_name, &child_stat_buffer, stat_flags) != 0) {
             bc_duplicate_error_collector_record(worker_slot->errors, worker_memory, child_path_buffer, "stat", errno);
-            errno = 0;
             continue;
         }
 
         if (S_ISREG(child_stat_buffer.st_mode)) {
             if (!bc_duplicate_filter_accepts_file(shared->filter, entry_name)) {
-                errno = 0;
                 continue;
             }
             size_t resolved_file_size = (size_t)child_stat_buffer.st_size;
             if (resolved_file_size < shared->options->minimum_file_size) {
-                errno = 0;
                 continue;
             }
             if (!bc_duplicate_walk_parallel_append_file_entry(worker_memory, worker_slot->file_entries, child_path_buffer, child_path_length,
                                                               resolved_file_size, child_stat_buffer.st_dev, child_stat_buffer.st_ino)) {
                 bc_duplicate_error_collector_record(worker_slot->errors, worker_memory, child_path_buffer, "enqueue", ENOMEM);
             }
-            errno = 0;
             continue;
         }
 
         if (S_ISDIR(child_stat_buffer.st_mode)) {
             if (!bc_duplicate_filter_accepts_directory(shared->filter, entry_name)) {
-                errno = 0;
                 continue;
             }
             if (shared->options->one_file_system && shared->root_device_id_known && child_stat_buffer.st_dev != shared->root_device_id) {
-                errno = 0;
                 continue;
             }
 
@@ -213,14 +198,8 @@ static void bc_duplicate_walk_parallel_process_directory(bc_duplicate_walk_paral
                                                              sub_entry.absolute_path_length);
             }
         }
-        errno = 0;
     }
 
-    if (errno != 0) {
-        bc_duplicate_error_collector_record(worker_slot->errors, worker_memory, directory_path, "readdir", errno);
-    }
-
-    closedir(directory_stream);
     close(directory_file_descriptor);
 }
 
