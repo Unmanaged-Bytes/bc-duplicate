@@ -1,3 +1,4 @@
 option('tests',        type : 'boolean', value : false, description : 'Build tests')
+option('fuzzing',      type : 'boolean', value : false, description : 'Build fuzz harnesses')
 option('arch',         type : 'string',  value : '',    description : 'Target architecture for -march (empty = x86-64-v3)')
 option('use_io_uring', type : 'feature', value : 'enabled', description : 'Use io_uring for batched file reads (liburing >= 2.5)')
