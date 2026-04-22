@@ -1,3 +1,15 @@
+bc-duplicate (1.1.0-1) stable; urgency=medium
+
+  * Add libFuzzer harness infrastructure under fuzzing/ with harnesses
+    for cli_parse (argv through bc_duplicate_cli_program_spec) and
+    filter (include/exclude list construction +
+    accepts_file / accepts_directory).
+  * Rebuilt against libbc-core 1.1.0 which carries the
+    count_lines_with_pattern shift-by-32 UB fix.
+  * No public CLI change.
+
+ -- Younes Benmoussa <younes.benmoussa@pm.me>  Wed, 22 Apr 2026 08:00:00 +0000
+
 bc-duplicate (1.0.1-1) stable; urgency=medium
 
   * perf(discovery): switch walk_parallel to raw syscall(SYS_getdents64).
