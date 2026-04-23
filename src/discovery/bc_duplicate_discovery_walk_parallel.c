@@ -46,8 +46,8 @@ typedef struct bc_duplicate_walk_parallel_shared {
     bc_concurrency_signal_handler_t* signal_handler;
     const bc_duplicate_filter_t* filter;
     const bc_duplicate_discovery_options_t* options;
-    dev_t root_device_id;
-    bool root_device_id_known;
+    _Atomic dev_t root_device_id;
+    _Atomic bool root_device_id_known;
 } bc_duplicate_walk_parallel_shared_t;
 
 static bool bc_duplicate_walk_parallel_should_stop(const bc_duplicate_walk_parallel_shared_t* shared)
@@ -181,7 +181,9 @@ static void bc_duplicate_walk_parallel_process_directory(bc_duplicate_walk_paral
             if (!bc_duplicate_filter_accepts_directory(shared->filter, entry_name)) {
                 continue;
             }
-            if (shared->options->one_file_system && shared->root_device_id_known && child_stat_buffer.st_dev != shared->root_device_id) {
+            if (shared->options->one_file_system
+                && atomic_load_explicit(&shared->root_device_id_known, memory_order_acquire)
+                && child_stat_buffer.st_dev != atomic_load_explicit(&shared->root_device_id, memory_order_relaxed)) {
                 continue;
             }
 
@@ -348,9 +350,9 @@ static void bc_duplicate_walk_parallel_process_input_path(bc_duplicate_walk_para
         if (bc_duplicate_discovery_path_is_pseudo_filesystem(input_path, &is_pseudo_filesystem) && is_pseudo_filesystem) {
             return;
         }
-        if (!shared->root_device_id_known) {
-            shared->root_device_id = input_stat_buffer.st_dev;
-            shared->root_device_id_known = true;
+        if (!atomic_load_explicit(&shared->root_device_id_known, memory_order_relaxed)) {
+            atomic_store_explicit(&shared->root_device_id, input_stat_buffer.st_dev, memory_order_relaxed);
+            atomic_store_explicit(&shared->root_device_id_known, true, memory_order_release);
         }
         bc_duplicate_walk_parallel_push_root_directory(shared, errors, input_path);
     } else if (S_ISLNK(input_stat_buffer.st_mode)) {
