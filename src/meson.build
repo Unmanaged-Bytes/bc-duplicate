@@ -25,6 +25,7 @@ bc_duplicate_sources = [
   'worker/bc_duplicate_worker_fast.c',
   'worker/bc_duplicate_worker_full.c',
   'worker/bc_duplicate_worker_reader.c',
+  'worker/bc_duplicate_worker_sort.c',
   bc_duplicate_throughput_sources,
   bc_duplicate_dispatch_decision_sources,
 ]

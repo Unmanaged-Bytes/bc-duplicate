@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "bc_duplicate_worker_internal.h"
+#include "bc_duplicate_worker_sort_internal.h"
 
 #include "bc_allocators_pool.h"
 #include "bc_concurrency.h"
@@ -106,6 +107,8 @@ bool bc_duplicate_worker_fast_pass(bc_allocators_context_t* memory_context, bc_c
             candidate_indices[cursor++] = group->start_index + offset;
         }
     }
+
+    bc_duplicate_worker_sort_indices_by_size_desc(entries, candidate_indices, total_candidates);
 
     bc_duplicate_worker_fast_context_t context = {
         .entries = entries,

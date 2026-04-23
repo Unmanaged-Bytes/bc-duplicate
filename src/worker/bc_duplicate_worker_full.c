@@ -2,6 +2,7 @@
 
 #include "bc_duplicate_reader_internal.h"
 #include "bc_duplicate_worker_internal.h"
+#include "bc_duplicate_worker_sort_internal.h"
 
 #include "bc_allocators_pool.h"
 #include "bc_concurrency.h"
@@ -267,6 +268,8 @@ bool bc_duplicate_worker_full_pass(bc_allocators_context_t* memory_context, bc_c
             candidate_indices[cursor++] = group->start_index + offset;
         }
     }
+
+    bc_duplicate_worker_sort_indices_by_size_desc(entries, candidate_indices, total_candidates);
 
     const bc_concurrency_slot_config_t slot_config = {
         .size = sizeof(bc_duplicate_worker_full_slot_t),

@@ -57,6 +57,14 @@ test_bc_duplicate_output_unit = executable('test_bc_duplicate_output_unit',
 )
 test('bc_duplicate_output_unit', test_bc_duplicate_output_unit)
 
+test_bc_duplicate_worker_sort_unit = executable('test_bc_duplicate_worker_sort_unit',
+  'test_bc_duplicate_worker_sort_unit.c',
+  '../src/worker/bc_duplicate_worker_sort.c',
+  include_directories : [bc_duplicate_internal_inc],
+  dependencies : [cmocka_dep],
+)
+test('bc_duplicate_worker_sort_unit', test_bc_duplicate_worker_sort_unit)
+
 test_bc_duplicate_discovery_e2e = executable('test_bc_duplicate_discovery_e2e',
   'test_bc_duplicate_discovery_e2e.c',
   dependencies : [cmocka_dep],
