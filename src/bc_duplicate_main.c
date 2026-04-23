@@ -18,6 +18,7 @@
 #include "bc_runtime.h"
 #include "bc_runtime_cli.h"
 
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -275,15 +276,15 @@ static bool bc_duplicate_application_run(const bc_runtime_t* application, void* 
     fprintf(stderr, "bc-duplicate: %zu duplicate group(s), %zu duplicate file(s), %zu wasted byte(s) in %llu ms\n", final_group_count,
             duplicate_file_count, wasted_bytes, (unsigned long long)statistics.wall_ms);
 
-    FILE* output_stream = stdout;
-    bool output_stream_owned = false;
+    int output_fd = STDOUT_FILENO;
+    bool output_fd_owned = false;
     bc_duplicate_output_format_t output_format = BC_DUPLICATE_OUTPUT_FORMAT_SIMPLE;
 
     if (state->cli_options.command == BC_DUPLICATE_COMMAND_SUMMARY) {
         output_format = BC_DUPLICATE_OUTPUT_FORMAT_SIMPLE;
     } else if (state->cli_options.output_destination_mode == BC_DUPLICATE_OUTPUT_DESTINATION_FILE) {
-        output_stream = fopen(state->cli_options.output_destination_path, "w");
-        if (output_stream == NULL) {
+        output_fd = open(state->cli_options.output_destination_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (output_fd < 0) {
             fprintf(stderr, "bc-duplicate: cannot open output file '%s'\n", state->cli_options.output_destination_path);
             if (final_groups != NULL) {
                 bc_allocators_pool_free(memory_context, final_groups);
@@ -296,26 +297,33 @@ static bool bc_duplicate_application_run(const bc_runtime_t* application, void* 
             state->exit_code = 1;
             return false;
         }
-        output_stream_owned = true;
+        output_fd_owned = true;
         output_format = BC_DUPLICATE_OUTPUT_FORMAT_JSON;
     } else if (state->cli_options.output_destination_mode == BC_DUPLICATE_OUTPUT_DESTINATION_AUTO) {
-        output_format = isatty(fileno(stdout)) ? BC_DUPLICATE_OUTPUT_FORMAT_SIMPLE : BC_DUPLICATE_OUTPUT_FORMAT_JSON;
+        output_format = isatty(STDOUT_FILENO) ? BC_DUPLICATE_OUTPUT_FORMAT_SIMPLE : BC_DUPLICATE_OUTPUT_FORMAT_JSON;
     } else {
         output_format = BC_DUPLICATE_OUTPUT_FORMAT_SIMPLE;
     }
 
-    bool output_ok = true;
-    if (state->cli_options.command == BC_DUPLICATE_COMMAND_SUMMARY) {
-        output_ok = bc_duplicate_output_summary_write(output_stream, &statistics);
-    } else if (output_format == BC_DUPLICATE_OUTPUT_FORMAT_JSON) {
-        output_ok = bc_duplicate_output_json_write(output_stream, state->cli_options.algorithm, entries_array, final_groups, final_group_count,
-                                                   &statistics);
-    } else {
-        output_ok = bc_duplicate_output_simple_write(output_stream, entries_array, final_groups, final_group_count);
+    char output_buffer[65536];
+    bc_core_writer_t output_writer;
+    bool output_ok = bc_core_writer_init(&output_writer, output_fd, output_buffer, sizeof(output_buffer));
+    if (output_ok) {
+        if (state->cli_options.command == BC_DUPLICATE_COMMAND_SUMMARY) {
+            output_ok = bc_duplicate_output_summary_write(&output_writer, &statistics);
+        } else if (output_format == BC_DUPLICATE_OUTPUT_FORMAT_JSON) {
+            output_ok = bc_duplicate_output_json_write(&output_writer, state->cli_options.algorithm, entries_array, final_groups, final_group_count,
+                                                       &statistics);
+        } else {
+            output_ok = bc_duplicate_output_simple_write(&output_writer, entries_array, final_groups, final_group_count);
+        }
+        if (!bc_core_writer_destroy(&output_writer)) {
+            output_ok = false;
+        }
     }
 
-    if (output_stream_owned) {
-        fclose(output_stream);
+    if (output_fd_owned) {
+        close(output_fd);
     }
 
     if (final_groups != NULL) {
