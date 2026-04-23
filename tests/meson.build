@@ -66,3 +66,14 @@ test_bc_duplicate_discovery_e2e = executable('test_bc_duplicate_discovery_e2e',
   ],
 )
 test('bc_duplicate_discovery_e2e', test_bc_duplicate_discovery_e2e, depends : [bc_duplicate_bin])
+
+if liburing_dep.found()
+  test_bc_duplicate_reader_ring_growth = executable('test_bc_duplicate_reader_ring_growth',
+    'test_bc_duplicate_reader_ring_growth.c',
+    '../src/worker/bc_duplicate_worker_batch_uring.c',
+    '../src/worker/bc_duplicate_worker_reader.c',
+    include_directories : [bc_duplicate_internal_inc],
+    dependencies : [cmocka_dep, bc_core_dep, liburing_dep],
+  )
+  test('bc_duplicate_reader_ring_growth', test_bc_duplicate_reader_ring_growth, timeout : 30)
+endif
