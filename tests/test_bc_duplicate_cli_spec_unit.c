@@ -62,7 +62,7 @@ static void test_program_spec_has_scan_and_summary(void** state)
     (void)state;
     const bc_runtime_cli_program_spec_t* spec = bc_duplicate_cli_program_spec();
     assert_string_equal(spec->program_name, "bc-duplicate");
-    assert_string_equal(spec->version, "1.0.0");
+    assert_string_equal(spec->version, BC_DUPLICATE_VERSION_STRING);
     assert_int_equal(spec->command_count, 2);
     assert_string_equal(spec->commands[0].name, "scan");
     assert_string_equal(spec->commands[1].name, "summary");

@@ -9,6 +9,7 @@ test_bc_duplicate_cli_spec_unit = executable('test_bc_duplicate_cli_spec_unit',
   '../src/cli/bc_duplicate_cli_spec.c',
   include_directories : [bc_duplicate_internal_inc],
   dependencies : [cmocka_dep, bc_core_dep, bc_allocators_dep, bc_runtime_dep],
+  c_args : [bc_duplicate_version_c_arg],
 )
 test('bc_duplicate_cli_spec_unit', test_bc_duplicate_cli_spec_unit)
 

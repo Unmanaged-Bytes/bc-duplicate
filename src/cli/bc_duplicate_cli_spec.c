@@ -152,7 +152,7 @@ static const bc_runtime_cli_command_spec_t bc_duplicate_commands[] = {
 
 static const bc_runtime_cli_program_spec_t bc_duplicate_program_spec_value = {
     .program_name = "bc-duplicate",
-    .version = "1.0.0",
+    .version = BC_DUPLICATE_VERSION_STRING,
     .summary = "parallel duplicate-file finder",
     .global_options = bc_duplicate_global_options,
     .global_option_count = sizeof(bc_duplicate_global_options) / sizeof(bc_duplicate_global_options[0]),

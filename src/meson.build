@@ -32,11 +32,13 @@ bc_duplicate_sources = [
 cc = meson.get_compiler('c')
 libm_dep = cc.find_library('m', required : true)
 
+bc_duplicate_version_c_arg = '-DBC_DUPLICATE_VERSION_STRING="@0@"'.format(meson.project_version())
+
 bc_duplicate_bin = executable('bc-duplicate',
   bc_duplicate_sources,
   include_directories : [bc_duplicate_internal_inc],
   dependencies : bc_duplicate_deps + [libm_dep],
-  c_args : lto_c_args,
+  c_args : lto_c_args + [bc_duplicate_version_c_arg],
   link_args : lto_link_args,
   install : true,
 )
