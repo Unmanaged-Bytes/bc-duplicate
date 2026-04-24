@@ -1,77 +1,69 @@
 // SPDX-License-Identifier: MIT
 
-#include "bc_io_dirent_reader.h"
 #include "bc_duplicate_discovery_internal.h"
+#include "bc_duplicate_filter_internal.h"
 #include "bc_duplicate_strings_internal.h"
+#include "bc_duplicate_types_internal.h"
 
 #include "bc_allocators_pool.h"
 #include "bc_concurrency.h"
 #include "bc_containers_vector.h"
 #include "bc_core.h"
 #include "bc_io_file.h"
-#include "bc_io_file_path.h"
+#include "bc_io_walk.h"
+#include "bc_runtime_error_collector.h"
 
-#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <glob.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include <stdio.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 
-#define BC_DUPLICATE_WALK_PARALLEL_QUEUE_CAPACITY          ((size_t)16384)
-#define BC_DUPLICATE_WALK_PARALLEL_INITIAL_VECTOR_CAPACITY ((size_t)1024)
-#define BC_DUPLICATE_WALK_PARALLEL_MAX_VECTOR_CAPACITY     ((size_t)1U << 28)
-#define BC_DUPLICATE_WALK_PARALLEL_TERMINATION_SPIN_PAUSES ((int)64)
+#define BC_DUPLICATE_WALK_INITIAL_VECTOR_CAPACITY ((size_t)1024)
+#define BC_DUPLICATE_WALK_MAX_VECTOR_CAPACITY ((size_t)1U << 28)
 
-typedef struct bc_duplicate_walk_parallel_queue_entry {
-    char absolute_path[BC_IO_MAX_PATH_LENGTH];
-    size_t absolute_path_length;
-} bc_duplicate_walk_parallel_queue_entry_t;
-
-typedef struct bc_duplicate_walk_parallel_worker_slot {
+typedef struct bc_duplicate_walk_worker_slot {
     bc_containers_vector_t* file_entries;
     bc_runtime_error_collector_t* errors;
-} bc_duplicate_walk_parallel_worker_slot_t;
+} bc_duplicate_walk_worker_slot_t;
 
-typedef struct bc_duplicate_walk_parallel_shared {
-    bc_concurrency_queue_t* directory_queue;
+typedef struct bc_duplicate_walk_context {
     size_t worker_slot_index;
-    _Atomic int outstanding_directory_count;
     bc_allocators_context_t* main_memory_context;
-    bc_concurrency_signal_handler_t* signal_handler;
     const bc_duplicate_filter_t* filter;
     const bc_duplicate_discovery_options_t* options;
     _Atomic dev_t root_device_id;
     _Atomic bool root_device_id_known;
-} bc_duplicate_walk_parallel_shared_t;
+} bc_duplicate_walk_context_t;
 
-static bool bc_duplicate_walk_parallel_should_stop(const bc_duplicate_walk_parallel_shared_t* shared)
+static const char* bc_duplicate_walk_basename(const char* path, size_t path_length)
 {
-    if (shared->signal_handler == NULL) {
-        return false;
+    if (path_length == 0) {
+        return path;
     }
-    bool should_stop = false;
-    bc_concurrency_signal_handler_should_stop(shared->signal_handler, &should_stop);
-    return should_stop;
+    for (size_t index = path_length; index > 0; --index) {
+        if (path[index - 1] == '/') {
+            return path + index;
+        }
+    }
+    return path;
 }
 
-static bool bc_duplicate_walk_parallel_ensure_worker_slot(const bc_duplicate_walk_parallel_shared_t* shared,
-                                                          bc_allocators_context_t* worker_memory,
-                                                          bc_duplicate_walk_parallel_worker_slot_t** out_slot)
+static bool bc_duplicate_walk_ensure_slot(const bc_duplicate_walk_context_t* context, bc_allocators_context_t* worker_memory,
+                                          bc_duplicate_walk_worker_slot_t** out_slot)
 {
-    bc_duplicate_walk_parallel_worker_slot_t* slot =
-        (bc_duplicate_walk_parallel_worker_slot_t*)bc_concurrency_worker_slot(shared->worker_slot_index);
+    bc_duplicate_walk_worker_slot_t* slot =
+        (bc_duplicate_walk_worker_slot_t*)bc_concurrency_worker_slot(context->worker_slot_index);
     if (slot == NULL) {
         return false;
     }
     if (slot->file_entries == NULL) {
-        if (!bc_containers_vector_create(worker_memory, sizeof(bc_duplicate_file_entry_t), BC_DUPLICATE_WALK_PARALLEL_INITIAL_VECTOR_CAPACITY,
-                                         BC_DUPLICATE_WALK_PARALLEL_MAX_VECTOR_CAPACITY, &slot->file_entries)) {
+        if (!bc_containers_vector_create(worker_memory, sizeof(bc_duplicate_file_entry_t), BC_DUPLICATE_WALK_INITIAL_VECTOR_CAPACITY,
+                                         BC_DUPLICATE_WALK_MAX_VECTOR_CAPACITY, &slot->file_entries)) {
             return false;
         }
     }
@@ -84,173 +76,104 @@ static bool bc_duplicate_walk_parallel_ensure_worker_slot(const bc_duplicate_wal
     return true;
 }
 
-static bool bc_duplicate_walk_parallel_append_file_entry(bc_allocators_context_t* worker_memory, bc_containers_vector_t* worker_vector,
-                                                         const char* absolute_path, size_t absolute_path_length, size_t file_size,
-                                                         dev_t device_id, ino_t inode_number)
+/* cppcheck-suppress constParameterCallback; signature fixed by bc_io_walk_filter_fn */
+static bool bc_duplicate_walk_filter(const bc_io_walk_entry_t* entry, void* user_data)
 {
-    char* path_copy = NULL;
-    if (!bc_allocators_pool_allocate(worker_memory, absolute_path_length + 1, (void**)&path_copy)) {
+    bc_duplicate_walk_context_t* context = (bc_duplicate_walk_context_t*)user_data;
+    const char* basename = bc_duplicate_walk_basename(entry->absolute_path, entry->absolute_path_length);
+
+    if (entry->kind == BC_IO_WALK_ENTRY_FILE) {
+        if (!bc_duplicate_filter_accepts_file(context->filter, basename)) {
+            return false;
+        }
+        if (entry->file_size < context->options->minimum_file_size) {
+            return false;
+        }
+        return true;
+    }
+    if (entry->kind == BC_IO_WALK_ENTRY_DIRECTORY) {
+        if (!bc_duplicate_filter_accepts_directory(context->filter, basename)) {
+            return false;
+        }
+        bool is_pseudo = false;
+        if (bc_duplicate_discovery_path_is_pseudo_filesystem(entry->absolute_path, &is_pseudo) && is_pseudo) {
+            return false;
+        }
+        if (context->options->one_file_system
+            && atomic_load_explicit(&context->root_device_id_known, memory_order_acquire)
+            && entry->device_id != atomic_load_explicit(&context->root_device_id, memory_order_relaxed)) {
+            return false;
+        }
+        return true;
+    }
+    return false;
+}
+
+/* cppcheck-suppress constParameterCallback; signature fixed by bc_io_walk_visit_fn */
+static bool bc_duplicate_walk_visit(const bc_io_walk_entry_t* entry, void* user_data)
+{
+    if (entry->kind != BC_IO_WALK_ENTRY_FILE) {
+        return true;
+    }
+    const bc_duplicate_walk_context_t* context = (const bc_duplicate_walk_context_t*)user_data;
+    bc_allocators_context_t* worker_memory = bc_concurrency_worker_memory();
+    if (worker_memory == NULL) {
+        worker_memory = context->main_memory_context;
+    }
+
+    bc_duplicate_walk_worker_slot_t* slot = NULL;
+    if (!bc_duplicate_walk_ensure_slot(context, worker_memory, &slot)) {
         return false;
     }
-    bc_core_copy(path_copy, absolute_path, absolute_path_length);
-    path_copy[absolute_path_length] = '\0';
 
-    bc_duplicate_file_entry_t entry = {
+    char* path_copy = NULL;
+    if (!bc_allocators_pool_allocate(worker_memory, entry->absolute_path_length + 1, (void**)&path_copy)) {
+        return false;
+    }
+    bc_core_copy(path_copy, entry->absolute_path, entry->absolute_path_length);
+    path_copy[entry->absolute_path_length] = '\0';
+
+    bc_duplicate_file_entry_t file_entry = {
         .absolute_path = path_copy,
-        .absolute_path_length = absolute_path_length,
-        .file_size = file_size,
-        .device_id = device_id,
-        .inode_number = inode_number,
+        .absolute_path_length = entry->absolute_path_length,
+        .file_size = entry->file_size,
+        .device_id = entry->device_id,
+        .inode_number = entry->inode_number,
     };
-    if (!bc_containers_vector_push(worker_memory, worker_vector, &entry)) {
+    if (!bc_containers_vector_push(worker_memory, slot->file_entries, &file_entry)) {
         bc_allocators_pool_free(worker_memory, path_copy);
         return false;
     }
     return true;
 }
 
-static void bc_duplicate_walk_parallel_process_directory(bc_duplicate_walk_parallel_shared_t* shared, bc_allocators_context_t* worker_memory,
-                                                         bc_duplicate_walk_parallel_worker_slot_t* worker_slot, const char* directory_path,
-                                                         size_t directory_path_length)
+/* cppcheck-suppress constParameterCallback; signature fixed by bc_io_walk_error_fn */
+static void bc_duplicate_walk_on_error(const char* path, const char* stage, int errno_value, void* user_data)
 {
-    bool is_pseudo_filesystem = false;
-    if (bc_duplicate_discovery_path_is_pseudo_filesystem(directory_path, &is_pseudo_filesystem) && is_pseudo_filesystem) {
-        return;
-    }
-
-    int open_flags = O_RDONLY | O_DIRECTORY | O_CLOEXEC;
-    if (!shared->options->follow_symlinks) {
-        open_flags |= O_NOFOLLOW;
-    }
-    int directory_file_descriptor = open(directory_path, open_flags);
-    if (directory_file_descriptor < 0) {
-        bc_runtime_error_collector_append(worker_slot->errors, worker_memory, directory_path, "open", errno);
-        return;
-    }
-
-    bc_io_dirent_reader_t dirent_reader;
-    bc_io_dirent_reader_init(&dirent_reader, directory_file_descriptor);
-
-    for (;;) {
-        bc_io_dirent_entry_t current_entry;
-        bool has_entry = false;
-        if (!bc_io_dirent_reader_next(&dirent_reader, &current_entry, &has_entry)) {
-            bc_runtime_error_collector_append(worker_slot->errors, worker_memory, directory_path, "getdents64", dirent_reader.last_errno);
-            break;
-        }
-        if (!has_entry) {
-            break;
-        }
-        const char* entry_name = current_entry.name;
-        if (!shared->options->include_hidden && entry_name[0] == '.') {
-            continue;
-        }
-
-        size_t entry_name_length = current_entry.name_length;
-        char child_path_buffer[BC_IO_MAX_PATH_LENGTH];
-        size_t child_path_length = 0;
-        if (!bc_io_file_path_join(child_path_buffer, sizeof(child_path_buffer), directory_path, directory_path_length, entry_name,
-                                  entry_name_length, &child_path_length)) {
-            bc_runtime_error_collector_append(worker_slot->errors, worker_memory, directory_path, "path-too-long", ENAMETOOLONG);
-            continue;
-        }
-
-        int stat_flags = shared->options->follow_symlinks ? 0 : AT_SYMLINK_NOFOLLOW;
-        struct stat child_stat_buffer;
-        if (fstatat(directory_file_descriptor, entry_name, &child_stat_buffer, stat_flags) != 0) {
-            bc_runtime_error_collector_append(worker_slot->errors, worker_memory, child_path_buffer, "stat", errno);
-            continue;
-        }
-
-        if (S_ISREG(child_stat_buffer.st_mode)) {
-            if (!bc_duplicate_filter_accepts_file(shared->filter, entry_name)) {
-                continue;
-            }
-            size_t resolved_file_size = (size_t)child_stat_buffer.st_size;
-            if (resolved_file_size < shared->options->minimum_file_size) {
-                continue;
-            }
-            if (!bc_duplicate_walk_parallel_append_file_entry(worker_memory, worker_slot->file_entries, child_path_buffer, child_path_length,
-                                                              resolved_file_size, child_stat_buffer.st_dev, child_stat_buffer.st_ino)) {
-                bc_runtime_error_collector_append(worker_slot->errors, worker_memory, child_path_buffer, "enqueue", ENOMEM);
-            }
-            continue;
-        }
-
-        if (S_ISDIR(child_stat_buffer.st_mode)) {
-            if (!bc_duplicate_filter_accepts_directory(shared->filter, entry_name)) {
-                continue;
-            }
-            if (shared->options->one_file_system
-                && atomic_load_explicit(&shared->root_device_id_known, memory_order_acquire)
-                && child_stat_buffer.st_dev != atomic_load_explicit(&shared->root_device_id, memory_order_relaxed)) {
-                continue;
-            }
-
-            bc_duplicate_walk_parallel_queue_entry_t sub_entry;
-            bc_core_zero(&sub_entry, sizeof(sub_entry));
-            bc_core_copy(sub_entry.absolute_path, child_path_buffer, child_path_length);
-            sub_entry.absolute_path_length = child_path_length;
-            sub_entry.absolute_path[child_path_length] = '\0';
-
-            atomic_fetch_add_explicit(&shared->outstanding_directory_count, 1, memory_order_relaxed);
-            if (!bc_concurrency_queue_push(shared->directory_queue, &sub_entry)) {
-                atomic_fetch_sub_explicit(&shared->outstanding_directory_count, 1, memory_order_relaxed);
-                bc_duplicate_walk_parallel_process_directory(shared, worker_memory, worker_slot, sub_entry.absolute_path,
-                                                             sub_entry.absolute_path_length);
-            }
-        }
-    }
-
-    close(directory_file_descriptor);
-}
-
-static void bc_duplicate_walk_parallel_worker_task(void* task_argument)
-{
-    bc_duplicate_walk_parallel_shared_t* shared = (bc_duplicate_walk_parallel_shared_t*)task_argument;
+    const bc_duplicate_walk_context_t* context = (const bc_duplicate_walk_context_t*)user_data;
     bc_allocators_context_t* worker_memory = bc_concurrency_worker_memory();
     if (worker_memory == NULL) {
-        worker_memory = shared->main_memory_context;
+        worker_memory = context->main_memory_context;
     }
-    bc_duplicate_walk_parallel_worker_slot_t* worker_slot = NULL;
-    if (!bc_duplicate_walk_parallel_ensure_worker_slot(shared, worker_memory, &worker_slot)) {
+    bc_duplicate_walk_worker_slot_t* slot = NULL;
+    if (!bc_duplicate_walk_ensure_slot(context, worker_memory, &slot)) {
         return;
     }
-
-    for (;;) {
-        if (bc_duplicate_walk_parallel_should_stop(shared)) {
-            BC_CONCURRENCY_TSAN_RELEASE(worker_slot);
-            return;
-        }
-        bc_duplicate_walk_parallel_queue_entry_t entry;
-        if (bc_concurrency_queue_pop(shared->directory_queue, &entry)) {
-            bc_duplicate_walk_parallel_process_directory(shared, worker_memory, worker_slot, entry.absolute_path, entry.absolute_path_length);
-            atomic_fetch_sub_explicit(&shared->outstanding_directory_count, 1, memory_order_release);
-            continue;
-        }
-        int outstanding = atomic_load_explicit(&shared->outstanding_directory_count, memory_order_acquire);
-        if (outstanding == 0) {
-            BC_CONCURRENCY_TSAN_RELEASE(worker_slot);
-            return;
-        }
-        for (int spin = 0; spin < BC_DUPLICATE_WALK_PARALLEL_TERMINATION_SPIN_PAUSES; ++spin) {
-        }
-    }
+    (void)bc_runtime_error_collector_append(slot->errors, worker_memory, path, stage, errno_value);
 }
 
-typedef struct bc_duplicate_walk_parallel_merge_argument {
+typedef struct bc_duplicate_walk_merge_argument {
     bc_containers_vector_t* destination_entries;
     bc_allocators_context_t* destination_memory_context;
     bool ok;
-} bc_duplicate_walk_parallel_merge_argument_t;
+} bc_duplicate_walk_merge_argument_t;
 
 /* cppcheck-suppress constParameterCallback; signature fixed by bc_concurrency_foreach_slot */
-static void bc_duplicate_walk_parallel_merge_worker_slot(void* slot_data, size_t worker_index, void* arg)
+static void bc_duplicate_walk_merge_worker_slot(void* slot_data, size_t worker_index, void* arg)
 {
     (void)worker_index;
-    BC_CONCURRENCY_TSAN_ACQUIRE(slot_data);
-    const bc_duplicate_walk_parallel_worker_slot_t* slot = (const bc_duplicate_walk_parallel_worker_slot_t*)slot_data;
-    bc_duplicate_walk_parallel_merge_argument_t* merge_argument = (bc_duplicate_walk_parallel_merge_argument_t*)arg;
+    const bc_duplicate_walk_worker_slot_t* slot = (const bc_duplicate_walk_worker_slot_t*)slot_data;
+    bc_duplicate_walk_merge_argument_t* merge_argument = (bc_duplicate_walk_merge_argument_t*)arg;
     if (!merge_argument->ok) {
         return;
     }
@@ -273,10 +196,10 @@ static void bc_duplicate_walk_parallel_merge_worker_slot(void* slot_data, size_t
     }
 }
 
-static bool bc_duplicate_walk_parallel_append_root_file(bc_allocators_context_t* memory_context, bc_containers_vector_t* destination_entries,
-                                                        bc_runtime_error_collector_t* errors,
-                                                        const bc_duplicate_discovery_options_t* options, const char* input_path, size_t file_size,
-                                                        dev_t device_id, ino_t inode_number)
+static bool bc_duplicate_walk_append_root_file(bc_allocators_context_t* memory_context, bc_containers_vector_t* destination_entries,
+                                               bc_runtime_error_collector_t* errors,
+                                               const bc_duplicate_discovery_options_t* options, const char* input_path, size_t file_size,
+                                               dev_t device_id, ino_t inode_number)
 {
     if (file_size < options->minimum_file_size) {
         return true;
@@ -305,76 +228,92 @@ static bool bc_duplicate_walk_parallel_append_root_file(bc_allocators_context_t*
     return true;
 }
 
-static bool bc_duplicate_walk_parallel_push_root_directory(bc_duplicate_walk_parallel_shared_t* shared, bc_runtime_error_collector_t* errors,
-                                                           const char* input_path)
+static void bc_duplicate_walk_run_on_directory(bc_duplicate_walk_context_t* context, bc_allocators_context_t* memory_context,
+                                               bc_concurrency_context_t* concurrency_context,
+                                               bc_runtime_error_collector_t* errors,
+                                               bc_concurrency_signal_handler_t* signal_handler,
+                                               const char* input_path)
 {
     size_t input_path_length = bc_duplicate_strings_length(input_path);
     while (input_path_length > 1 && input_path[input_path_length - 1] == '/') {
         input_path_length -= 1;
     }
     if (input_path_length >= BC_IO_MAX_PATH_LENGTH) {
-        bc_runtime_error_collector_append(errors, shared->main_memory_context, input_path, "path-too-long", ENAMETOOLONG);
-        return false;
+        bc_runtime_error_collector_append(errors, memory_context, input_path, "path-too-long", ENAMETOOLONG);
+        return;
     }
 
-    bc_duplicate_walk_parallel_queue_entry_t queue_entry;
-    bc_core_zero(&queue_entry, sizeof(queue_entry));
-    bc_core_copy(queue_entry.absolute_path, input_path, input_path_length);
-    queue_entry.absolute_path_length = input_path_length;
-    queue_entry.absolute_path[input_path_length] = '\0';
-
-    atomic_fetch_add_explicit(&shared->outstanding_directory_count, 1, memory_order_relaxed);
-    if (!bc_concurrency_queue_push(shared->directory_queue, &queue_entry)) {
-        atomic_fetch_sub_explicit(&shared->outstanding_directory_count, 1, memory_order_relaxed);
-        bc_runtime_error_collector_append(errors, shared->main_memory_context, input_path, "enqueue", ENOSPC);
-        return false;
-    }
-    return true;
+    bc_io_walk_config_t config = {
+        .root = input_path,
+        .root_length = input_path_length,
+        .main_memory_context = memory_context,
+        .concurrency_context = concurrency_context,
+        .signal_handler = signal_handler,
+        .queue_capacity = 0,
+        .follow_symlinks = context->options->follow_symlinks,
+        .include_hidden = context->options->include_hidden,
+        .filter = bc_duplicate_walk_filter,
+        .filter_user_data = context,
+        .visit = bc_duplicate_walk_visit,
+        .visit_user_data = context,
+        .on_error = bc_duplicate_walk_on_error,
+        .error_user_data = context,
+    };
+    bc_io_walk_stats_t stats;
+    (void)bc_io_walk_parallel(&config, &stats);
 }
 
-static void bc_duplicate_walk_parallel_process_input_path(bc_duplicate_walk_parallel_shared_t* shared,
-                                                          bc_containers_vector_t* destination_entries,
-                                                          bc_runtime_error_collector_t* errors, const char* input_path)
+static void bc_duplicate_walk_process_input_path(bc_duplicate_walk_context_t* context, bc_allocators_context_t* memory_context,
+                                                 bc_concurrency_context_t* concurrency_context,
+                                                 bc_containers_vector_t* destination_entries,
+                                                 bc_runtime_error_collector_t* errors,
+                                                 bc_concurrency_signal_handler_t* signal_handler,
+                                                 const char* input_path)
 {
-    int stat_flags = shared->options->follow_symlinks ? 0 : AT_SYMLINK_NOFOLLOW;
+    int stat_flags = context->options->follow_symlinks ? 0 : AT_SYMLINK_NOFOLLOW;
     struct stat input_stat_buffer;
     if (fstatat(AT_FDCWD, input_path, &input_stat_buffer, stat_flags) != 0) {
-        bc_runtime_error_collector_append(errors, shared->main_memory_context, input_path, "stat", errno);
+        bc_runtime_error_collector_append(errors, memory_context, input_path, "stat", errno);
         return;
     }
     if (S_ISREG(input_stat_buffer.st_mode)) {
-        bc_duplicate_walk_parallel_append_root_file(shared->main_memory_context, destination_entries, errors, shared->options, input_path,
-                                                    (size_t)input_stat_buffer.st_size, input_stat_buffer.st_dev, input_stat_buffer.st_ino);
+        bc_duplicate_walk_append_root_file(memory_context, destination_entries, errors, context->options, input_path,
+                                           (size_t)input_stat_buffer.st_size, input_stat_buffer.st_dev, input_stat_buffer.st_ino);
     } else if (S_ISDIR(input_stat_buffer.st_mode)) {
         bool is_pseudo_filesystem = false;
         if (bc_duplicate_discovery_path_is_pseudo_filesystem(input_path, &is_pseudo_filesystem) && is_pseudo_filesystem) {
             return;
         }
-        if (!atomic_load_explicit(&shared->root_device_id_known, memory_order_relaxed)) {
-            atomic_store_explicit(&shared->root_device_id, input_stat_buffer.st_dev, memory_order_relaxed);
-            atomic_store_explicit(&shared->root_device_id_known, true, memory_order_release);
+        if (!atomic_load_explicit(&context->root_device_id_known, memory_order_relaxed)) {
+            atomic_store_explicit(&context->root_device_id, input_stat_buffer.st_dev, memory_order_relaxed);
+            atomic_store_explicit(&context->root_device_id_known, true, memory_order_release);
         }
-        bc_duplicate_walk_parallel_push_root_directory(shared, errors, input_path);
+        bc_duplicate_walk_run_on_directory(context, memory_context, concurrency_context, errors, signal_handler, input_path);
     } else if (S_ISLNK(input_stat_buffer.st_mode)) {
-        bc_runtime_error_collector_append(errors, shared->main_memory_context, input_path, "skip-symlink", ELOOP);
+        bc_runtime_error_collector_append(errors, memory_context, input_path, "skip-symlink", ELOOP);
     } else {
-        bc_runtime_error_collector_append(errors, shared->main_memory_context, input_path, "skip-other", EINVAL);
+        bc_runtime_error_collector_append(errors, memory_context, input_path, "skip-other", EINVAL);
     }
 }
 
-static void bc_duplicate_walk_parallel_expand_glob(bc_duplicate_walk_parallel_shared_t* shared, bc_containers_vector_t* destination_entries,
-                                                   bc_runtime_error_collector_t* errors, const char* pattern)
+static void bc_duplicate_walk_expand_glob(bc_duplicate_walk_context_t* context, bc_allocators_context_t* memory_context,
+                                          bc_concurrency_context_t* concurrency_context,
+                                          bc_containers_vector_t* destination_entries,
+                                          bc_runtime_error_collector_t* errors,
+                                          bc_concurrency_signal_handler_t* signal_handler,
+                                          const char* pattern)
 {
     glob_t glob_buffer;
     int glob_flags = GLOB_NOSORT | GLOB_NOCHECK | GLOB_NOMAGIC;
     int glob_result = glob(pattern, glob_flags, NULL, &glob_buffer);
     if (glob_result != 0) {
-        bc_runtime_error_collector_append(errors, shared->main_memory_context, pattern, "glob", EINVAL);
+        bc_runtime_error_collector_append(errors, memory_context, pattern, "glob", EINVAL);
         globfree(&glob_buffer);
         return;
     }
     for (size_t index = 0; index < glob_buffer.gl_pathc; ++index) {
-        bc_duplicate_walk_parallel_process_input_path(shared, destination_entries, errors, glob_buffer.gl_pathv[index]);
+        bc_duplicate_walk_process_input_path(context, memory_context, concurrency_context, destination_entries, errors,
+                                             signal_handler, glob_buffer.gl_pathv[index]);
     }
     globfree(&glob_buffer);
 }
@@ -385,28 +324,21 @@ bool bc_duplicate_discovery_expand_parallel(bc_allocators_context_t* memory_cont
                                             const bc_duplicate_discovery_options_t* options, const char* const* input_paths,
                                             size_t input_count)
 {
-    bc_duplicate_walk_parallel_shared_t shared;
-    bc_core_zero(&shared, sizeof(shared));
-    shared.main_memory_context = memory_context;
-    shared.signal_handler = signal_handler;
-    shared.filter = filter;
-    shared.options = options;
-    shared.root_device_id_known = false;
-    atomic_store_explicit(&shared.outstanding_directory_count, 0, memory_order_relaxed);
-
-    if (!bc_concurrency_queue_create(memory_context, sizeof(bc_duplicate_walk_parallel_queue_entry_t),
-                                     BC_DUPLICATE_WALK_PARALLEL_QUEUE_CAPACITY, &shared.directory_queue)) {
-        return false;
-    }
+    bc_duplicate_walk_context_t context;
+    bc_core_zero(&context, sizeof(context));
+    context.main_memory_context = memory_context;
+    context.filter = filter;
+    context.options = options;
+    atomic_store_explicit(&context.root_device_id, 0, memory_order_relaxed);
+    atomic_store_explicit(&context.root_device_id_known, false, memory_order_relaxed);
 
     bc_concurrency_slot_config_t slot_config = {
-        .size = sizeof(bc_duplicate_walk_parallel_worker_slot_t),
+        .size = sizeof(bc_duplicate_walk_worker_slot_t),
         .init = NULL,
         .destroy = NULL,
         .arg = NULL,
     };
-    if (!bc_concurrency_register_slot(concurrency_context, &slot_config, &shared.worker_slot_index)) {
-        bc_concurrency_queue_destroy(shared.directory_queue);
+    if (!bc_concurrency_register_slot(concurrency_context, &slot_config, &context.worker_slot_index)) {
         return false;
     }
 
@@ -415,26 +347,18 @@ bool bc_duplicate_discovery_expand_parallel(bc_allocators_context_t* memory_cont
         bool contains_metacharacter = false;
         bc_duplicate_discovery_glob_contains_metacharacter(input_path, &contains_metacharacter);
         if (contains_metacharacter) {
-            bc_duplicate_walk_parallel_expand_glob(&shared, entries, errors, input_path);
+            bc_duplicate_walk_expand_glob(&context, memory_context, concurrency_context, entries, errors, signal_handler, input_path);
         } else {
-            bc_duplicate_walk_parallel_process_input_path(&shared, entries, errors, input_path);
+            bc_duplicate_walk_process_input_path(&context, memory_context, concurrency_context, entries, errors, signal_handler, input_path);
         }
     }
 
-    size_t effective_worker_count = bc_concurrency_effective_worker_count(concurrency_context);
-    for (size_t worker_index = 0; worker_index < effective_worker_count; ++worker_index) {
-        bc_concurrency_submit(concurrency_context, bc_duplicate_walk_parallel_worker_task, &shared);
-    }
-    bc_concurrency_dispatch_and_wait(concurrency_context);
-
-    bc_duplicate_walk_parallel_merge_argument_t merge_argument = {
+    bc_duplicate_walk_merge_argument_t merge_argument = {
         .destination_entries = entries,
         .destination_memory_context = memory_context,
         .ok = true,
     };
-    bc_concurrency_foreach_slot(concurrency_context, shared.worker_slot_index, bc_duplicate_walk_parallel_merge_worker_slot, &merge_argument);
-
-    bc_concurrency_queue_destroy(shared.directory_queue);
+    bc_concurrency_foreach_slot(concurrency_context, context.worker_slot_index, bc_duplicate_walk_merge_worker_slot, &merge_argument);
 
     return merge_argument.ok;
 }
