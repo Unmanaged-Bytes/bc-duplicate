@@ -41,7 +41,7 @@ static bool bc_duplicate_output_json_write_escaped(bc_core_writer_t* writer, con
         default:
             if (byte < 0x20u) {
                 ok = BC_CORE_WRITER_PUTS(writer, "\\u")
-                     && bc_core_writer_write_uint64_hex_padded(writer, (uint64_t)byte, 4U);
+                     && bc_core_writer_write_unsigned_integer_64_hexadecimal_padded(writer, (uint64_t)byte, 4U);
             } else {
                 ok = bc_core_writer_write_char(writer, (char)byte);
             }
@@ -71,7 +71,7 @@ static bool write_stat_key_value(bc_core_writer_t* writer, const char* key, size
     if (!bc_core_writer_write_char(writer, '"')) return false;
     if (!bc_core_writer_write_bytes(writer, key, key_length)) return false;
     if (!BC_CORE_WRITER_PUTS(writer, "\":")) return false;
-    return bc_core_writer_write_uint64_dec(writer, value);
+    return bc_core_writer_write_unsigned_integer_64_decimal(writer, value);
 }
 
 static bool bc_duplicate_output_json_write_stats(bc_core_writer_t* writer, const bc_duplicate_statistics_t* statistics)
@@ -120,7 +120,7 @@ bool bc_duplicate_output_json_write(bc_core_writer_t* writer, bc_duplicate_algor
             if (!bc_core_writer_write_char(writer, ',')) return false;
         }
         if (!BC_CORE_WRITER_PUTS(writer, "{\"size\":")) return false;
-        if (!bc_core_writer_write_uint64_dec(writer, (uint64_t)group->file_size)) return false;
+        if (!bc_core_writer_write_unsigned_integer_64_decimal(writer, (uint64_t)group->file_size)) return false;
         if (!BC_CORE_WRITER_PUTS(writer, ",\"files\":[")) return false;
         for (size_t entry_offset = 0; entry_offset < group->entry_count; ++entry_offset) {
             if (entry_offset > 0) {

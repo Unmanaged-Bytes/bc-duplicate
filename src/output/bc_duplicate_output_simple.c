@@ -36,7 +36,7 @@ static bool write_labeled_uint(bc_core_writer_t* writer, const char* label, size
     if (!bc_core_writer_write_bytes(writer, label, label_length)) {
         return false;
     }
-    if (!bc_core_writer_write_uint64_dec(writer, value)) {
+    if (!bc_core_writer_write_unsigned_integer_64_decimal(writer, value)) {
         return false;
     }
     return bc_core_writer_write_char(writer, '\n');

@@ -298,6 +298,17 @@ static void test_invalid_threads_fails(void** state)
     assert_false(bc_duplicate_cli_bind_global_threads(fixture->store, &mode, &count));
 }
 
+static void test_overflow_threads_fails(void** state)
+{
+    struct fixture* fixture = *state;
+    /* 2^64 = 18446744073709551616 — overflows uint64_t. */
+    assert_true(bc_runtime_config_store_set(fixture->store, "global.threads", "18446744073709551616"));
+    bc_runtime_config_store_sort(fixture->store);
+    bc_duplicate_threads_mode_t mode = BC_DUPLICATE_THREADS_MODE_AUTO;
+    size_t count = 0;
+    assert_false(bc_duplicate_cli_bind_global_threads(fixture->store, &mode, &count));
+}
+
 static void test_unknown_command_fails(void** state)
 {
     struct fixture* fixture = *state;
@@ -328,6 +339,7 @@ int main(void)
         cmocka_unit_test_setup_teardown(test_invalid_minimum_size_fails, setup, teardown),
         cmocka_unit_test_setup_teardown(test_invalid_output_fails, setup, teardown),
         cmocka_unit_test_setup_teardown(test_invalid_threads_fails, setup, teardown),
+        cmocka_unit_test_setup_teardown(test_overflow_threads_fails, setup, teardown),
         cmocka_unit_test_setup_teardown(test_unknown_command_fails, setup, teardown),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);

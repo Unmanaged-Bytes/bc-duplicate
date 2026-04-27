@@ -9,6 +9,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 static const char* const bc_duplicate_algorithm_values[] = {"xxh3", "xxh128", "sha256", NULL};
 
@@ -192,9 +193,13 @@ static bool bc_duplicate_cli_bind_threads(const char* value, bc_duplicate_thread
     if (value[0] == '\0') {
         return false;
     }
-    char* end_pointer = NULL;
-    unsigned long parsed_value = strtoul(value, &end_pointer, 10);
-    if (end_pointer == value || *end_pointer != '\0') {
+    const size_t value_length = strlen(value);
+    uint64_t parsed_value = 0;
+    size_t consumed = 0;
+    if (!bc_core_parse_unsigned_integer_64_decimal(value, value_length, &parsed_value, &consumed)) {
+        return false;
+    }
+    if (consumed != value_length) {
         return false;
     }
     if (parsed_value == 0) {
