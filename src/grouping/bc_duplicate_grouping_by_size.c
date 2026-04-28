@@ -5,31 +5,18 @@
 #include "bc_allocators_pool.h"
 #include "bc_core.h"
 
-#include <stdlib.h>
-
-static int bc_duplicate_grouping_size_dev_ino_compare(const void* lhs, const void* rhs)
+static bool bc_duplicate_grouping_size_dev_ino_less_than(const void* lhs, const void* rhs, void* user_data)
 {
+    (void)user_data;
     const bc_duplicate_file_entry_t* left = (const bc_duplicate_file_entry_t*)lhs;
     const bc_duplicate_file_entry_t* right = (const bc_duplicate_file_entry_t*)rhs;
-    if (left->file_size > right->file_size) {
-        return -1;
+    if (left->file_size != right->file_size) {
+        return left->file_size > right->file_size;
     }
-    if (left->file_size < right->file_size) {
-        return 1;
+    if (left->device_id != right->device_id) {
+        return left->device_id < right->device_id;
     }
-    if (left->device_id < right->device_id) {
-        return -1;
-    }
-    if (left->device_id > right->device_id) {
-        return 1;
-    }
-    if (left->inode_number < right->inode_number) {
-        return -1;
-    }
-    if (left->inode_number > right->inode_number) {
-        return 1;
-    }
-    return 0;
+    return left->inode_number < right->inode_number;
 }
 
 static size_t bc_duplicate_grouping_collapse_hardlinks_in_run(bc_duplicate_file_entry_t* entries, size_t run_start_index, size_t run_length)
@@ -66,7 +53,7 @@ bool bc_duplicate_grouping_by_size(bc_allocators_context_t* memory_context, bc_d
         return true;
     }
 
-    qsort(entries, entry_count, sizeof(bc_duplicate_file_entry_t), bc_duplicate_grouping_size_dev_ino_compare);
+    bc_core_sort_with_compare(entries, entry_count, sizeof(bc_duplicate_file_entry_t), bc_duplicate_grouping_size_dev_ino_less_than, NULL);
 
     if (!match_hardlinks) {
         size_t write_index = 0;

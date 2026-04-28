@@ -20,13 +20,22 @@
 
 #include <fcntl.h>
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <time.h>
 #include <unistd.h>
 
 #define BC_DUPLICATE_APPLICATION_ENTRY_INITIAL_CAPACITY ((size_t)1024)
 #define BC_DUPLICATE_APPLICATION_ENTRY_MAX_CAPACITY     ((size_t)1U << 28)
+
+static void bc_duplicate_main_log_cstring(const char* message)
+{
+    char buffer[512];
+    bc_core_writer_t writer;
+    if (!bc_core_writer_init_standard_error(&writer, buffer, sizeof(buffer))) {
+        return;
+    }
+    bc_core_writer_write_cstring(&writer, message);
+    bc_core_writer_destroy(&writer);
+}
 
 static uint64_t bc_duplicate_main_monotonic_ms(void)
 {
@@ -126,7 +135,7 @@ static bool bc_duplicate_application_run(const bc_runtime_t* application, void* 
     bool interrupted_after_discovery = false;
     bc_runtime_should_stop(application, &interrupted_after_discovery);
     if (interrupted_after_discovery) {
-        fputs("bc-duplicate: interrupted by signal, aborting before grouping\n", stderr);
+        bc_duplicate_main_log_cstring("bc-duplicate: interrupted by signal, aborting before grouping\n");
         state->exit_code = 130;
         return false;
     }
@@ -135,7 +144,18 @@ static bool bc_duplicate_application_run(const bc_runtime_t* application, void* 
 
     size_t entry_count = bc_containers_vector_length(state->entries);
     size_t error_count = bc_runtime_error_collector_count(state->errors);
-    fprintf(stderr, "bc-duplicate: discovery: %zu file(s) found, %zu error(s)\n", entry_count, error_count);
+    {
+        char log_buffer[256];
+        bc_core_writer_t log_writer;
+        if (bc_core_writer_init_standard_error(&log_writer, log_buffer, sizeof(log_buffer))) {
+            bc_core_writer_write_cstring(&log_writer, "bc-duplicate: discovery: ");
+            bc_core_writer_write_unsigned_integer_64_decimal(&log_writer, (uint64_t)entry_count);
+            bc_core_writer_write_cstring(&log_writer, " file(s) found, ");
+            bc_core_writer_write_unsigned_integer_64_decimal(&log_writer, (uint64_t)error_count);
+            bc_core_writer_write_cstring(&log_writer, " error(s)\n");
+            bc_core_writer_destroy(&log_writer);
+        }
+    }
 
     if (entry_count == 0) {
         state->exit_code = error_count == 0 ? 0 : 1;
@@ -166,8 +186,20 @@ static bool bc_duplicate_application_run(const bc_runtime_t* application, void* 
         return false;
     }
 
-    fprintf(stderr, "bc-duplicate: size groups: %zu (%zu candidates, %zu hardlink(s) collapsed)\n", size_group_count, size_candidate_count,
-            hardlinks_collapsed);
+    {
+        char log_buffer[256];
+        bc_core_writer_t log_writer;
+        if (bc_core_writer_init_standard_error(&log_writer, log_buffer, sizeof(log_buffer))) {
+            bc_core_writer_write_cstring(&log_writer, "bc-duplicate: size groups: ");
+            bc_core_writer_write_unsigned_integer_64_decimal(&log_writer, (uint64_t)size_group_count);
+            bc_core_writer_write_cstring(&log_writer, " (");
+            bc_core_writer_write_unsigned_integer_64_decimal(&log_writer, (uint64_t)size_candidate_count);
+            bc_core_writer_write_cstring(&log_writer, " candidates, ");
+            bc_core_writer_write_unsigned_integer_64_decimal(&log_writer, (uint64_t)hardlinks_collapsed);
+            bc_core_writer_write_cstring(&log_writer, " hardlink(s) collapsed)\n");
+            bc_core_writer_destroy(&log_writer);
+        }
+    }
 
     if (size_group_count == 0) {
         if (size_groups != NULL) {
@@ -198,8 +230,20 @@ static bool bc_duplicate_application_run(const bc_runtime_t* application, void* 
         return false;
     }
 
-    fprintf(stderr, "bc-duplicate: fast-hash groups: %zu (%zu candidates after %zu hashed)\n", fast_hash_group_count, fast_hash_candidate_count,
-            fast_files_hashed);
+    {
+        char log_buffer[256];
+        bc_core_writer_t log_writer;
+        if (bc_core_writer_init_standard_error(&log_writer, log_buffer, sizeof(log_buffer))) {
+            bc_core_writer_write_cstring(&log_writer, "bc-duplicate: fast-hash groups: ");
+            bc_core_writer_write_unsigned_integer_64_decimal(&log_writer, (uint64_t)fast_hash_group_count);
+            bc_core_writer_write_cstring(&log_writer, " (");
+            bc_core_writer_write_unsigned_integer_64_decimal(&log_writer, (uint64_t)fast_hash_candidate_count);
+            bc_core_writer_write_cstring(&log_writer, " candidates after ");
+            bc_core_writer_write_unsigned_integer_64_decimal(&log_writer, (uint64_t)fast_files_hashed);
+            bc_core_writer_write_cstring(&log_writer, " hashed)\n");
+            bc_core_writer_destroy(&log_writer);
+        }
+    }
 
     bc_duplicate_group_t* final_groups = NULL;
     size_t final_group_count = 0;
@@ -221,9 +265,22 @@ static bool bc_duplicate_application_run(const bc_runtime_t* application, void* 
                                                                                          state->cli_options.algorithm, &throughput_constants,
                                                                                          effective_worker_count);
                 full_pass_force_single_thread = !should_multi;
-                fprintf(stderr, "bc-duplicate: full-hash dispatch: %s (%zu file(s), %zu byte(s), %zu worker(s))\n",
-                        full_pass_force_single_thread ? "single-thread" : "multi-thread", full_pass_file_count, full_pass_total_bytes,
-                        effective_worker_count);
+                {
+                    char log_buffer[256];
+                    bc_core_writer_t log_writer;
+                    if (bc_core_writer_init_standard_error(&log_writer, log_buffer, sizeof(log_buffer))) {
+                        bc_core_writer_write_cstring(&log_writer, "bc-duplicate: full-hash dispatch: ");
+                        bc_core_writer_write_cstring(&log_writer, full_pass_force_single_thread ? "single-thread" : "multi-thread");
+                        bc_core_writer_write_cstring(&log_writer, " (");
+                        bc_core_writer_write_unsigned_integer_64_decimal(&log_writer, (uint64_t)full_pass_file_count);
+                        bc_core_writer_write_cstring(&log_writer, " file(s), ");
+                        bc_core_writer_write_unsigned_integer_64_decimal(&log_writer, (uint64_t)full_pass_total_bytes);
+                        bc_core_writer_write_cstring(&log_writer, " byte(s), ");
+                        bc_core_writer_write_unsigned_integer_64_decimal(&log_writer, (uint64_t)effective_worker_count);
+                        bc_core_writer_write_cstring(&log_writer, " worker(s))\n");
+                        bc_core_writer_destroy(&log_writer);
+                    }
+                }
             }
         }
 
@@ -273,8 +330,22 @@ static bool bc_duplicate_application_run(const bc_runtime_t* application, void* 
         .wall_ms = bc_duplicate_main_monotonic_ms() - started_at_monotonic_ms,
     };
 
-    fprintf(stderr, "bc-duplicate: %zu duplicate group(s), %zu duplicate file(s), %zu wasted byte(s) in %llu ms\n", final_group_count,
-            duplicate_file_count, wasted_bytes, (unsigned long long)statistics.wall_ms);
+    {
+        char log_buffer[256];
+        bc_core_writer_t log_writer;
+        if (bc_core_writer_init_standard_error(&log_writer, log_buffer, sizeof(log_buffer))) {
+            bc_core_writer_write_cstring(&log_writer, "bc-duplicate: ");
+            bc_core_writer_write_unsigned_integer_64_decimal(&log_writer, (uint64_t)final_group_count);
+            bc_core_writer_write_cstring(&log_writer, " duplicate group(s), ");
+            bc_core_writer_write_unsigned_integer_64_decimal(&log_writer, (uint64_t)duplicate_file_count);
+            bc_core_writer_write_cstring(&log_writer, " duplicate file(s), ");
+            bc_core_writer_write_unsigned_integer_64_decimal(&log_writer, (uint64_t)wasted_bytes);
+            bc_core_writer_write_cstring(&log_writer, " wasted byte(s) in ");
+            bc_core_writer_write_unsigned_integer_64_decimal(&log_writer, statistics.wall_ms);
+            bc_core_writer_write_cstring(&log_writer, " ms\n");
+            bc_core_writer_destroy(&log_writer);
+        }
+    }
 
     int output_fd = STDOUT_FILENO;
     bool output_fd_owned = false;
@@ -285,7 +356,14 @@ static bool bc_duplicate_application_run(const bc_runtime_t* application, void* 
     } else if (state->cli_options.output_destination_mode == BC_DUPLICATE_OUTPUT_DESTINATION_FILE) {
         output_fd = open(state->cli_options.output_destination_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
         if (output_fd < 0) {
-            fprintf(stderr, "bc-duplicate: cannot open output file '%s'\n", state->cli_options.output_destination_path);
+            char log_buffer[1024];
+            bc_core_writer_t log_writer;
+            if (bc_core_writer_init_standard_error(&log_writer, log_buffer, sizeof(log_buffer))) {
+                bc_core_writer_write_cstring(&log_writer, "bc-duplicate: cannot open output file '");
+                bc_core_writer_write_cstring(&log_writer, state->cli_options.output_destination_path);
+                bc_core_writer_write_cstring(&log_writer, "'\n");
+                bc_core_writer_destroy(&log_writer);
+            }
             if (final_groups != NULL) {
                 bc_allocators_pool_free(memory_context, final_groups);
             }
@@ -374,13 +452,13 @@ int main(int argument_count, char** argument_values)
     bc_allocators_context_config_t cli_memory_config = {.tracking_enabled = false};
     bc_allocators_context_t* cli_memory_context = NULL;
     if (!bc_allocators_context_create(&cli_memory_config, &cli_memory_context)) {
-        fputs("bc-duplicate: failed to create CLI memory context\n", stderr);
+        bc_duplicate_main_log_cstring("bc-duplicate: failed to create CLI memory context\n");
         return 1;
     }
 
     bc_runtime_config_store_t* cli_store = NULL;
     if (!bc_runtime_config_store_create(cli_memory_context, &cli_store)) {
-        fputs("bc-duplicate: failed to create CLI config store\n", stderr);
+        bc_duplicate_main_log_cstring("bc-duplicate: failed to create CLI config store\n");
         bc_allocators_context_destroy(cli_memory_context);
         return 1;
     }
@@ -451,7 +529,7 @@ int main(int argument_count, char** argument_values)
 
     bc_runtime_t* runtime = NULL;
     if (!bc_runtime_create(&runtime_config, &runtime_callbacks, &state, &runtime)) {
-        fputs("bc-duplicate: failed to initialize runtime\n", stderr);
+        bc_duplicate_main_log_cstring("bc-duplicate: failed to initialize runtime\n");
         bc_runtime_config_store_destroy(cli_memory_context, cli_store);
         bc_allocators_context_destroy(cli_memory_context);
         return 1;

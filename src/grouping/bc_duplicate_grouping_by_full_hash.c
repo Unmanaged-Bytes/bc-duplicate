@@ -5,21 +5,19 @@
 #include "bc_allocators_pool.h"
 #include "bc_core.h"
 
-#include <stdlib.h>
-
 typedef struct bc_duplicate_full_hash_compare_context {
     size_t digest_size;
 } bc_duplicate_full_hash_compare_context_t;
 
-/* cppcheck-suppress constParameterCallback; signature fixed by qsort_r */
-static int bc_duplicate_grouping_full_hash_compare_r(const void* lhs, const void* rhs, void* user)
+/* cppcheck-suppress constParameterCallback; signature fixed by bc_core_sort_less_than_function */
+static bool bc_duplicate_grouping_full_hash_less_than(const void* lhs, const void* rhs, void* user_data)
 {
     const bc_duplicate_file_entry_t* left = (const bc_duplicate_file_entry_t*)lhs;
     const bc_duplicate_file_entry_t* right = (const bc_duplicate_file_entry_t*)rhs;
-    const bc_duplicate_full_hash_compare_context_t* context = (const bc_duplicate_full_hash_compare_context_t*)user;
+    const bc_duplicate_full_hash_compare_context_t* context = (const bc_duplicate_full_hash_compare_context_t*)user_data;
     int result = 0;
     bc_core_compare(left->full_hash, right->full_hash, context->digest_size, &result);
-    return result;
+    return result < 0;
 }
 
 bool bc_duplicate_grouping_by_full_hash(bc_allocators_context_t* memory_context, bc_duplicate_file_entry_t* entries,
@@ -47,7 +45,7 @@ bool bc_duplicate_grouping_by_full_hash(bc_allocators_context_t* memory_context,
         bc_duplicate_file_entry_t* run_begin = &entries[fast_group->start_index];
         size_t run_length = fast_group->entry_count;
 
-        qsort_r(run_begin, run_length, sizeof(bc_duplicate_file_entry_t), bc_duplicate_grouping_full_hash_compare_r, &compare_context);
+        bc_core_sort_with_compare(run_begin, run_length, sizeof(bc_duplicate_file_entry_t), bc_duplicate_grouping_full_hash_less_than, &compare_context);
 
         size_t cursor = 0;
         while (cursor < run_length) {

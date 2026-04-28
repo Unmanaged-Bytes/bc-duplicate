@@ -7,9 +7,65 @@
 #include "bc_runtime.h"
 #include "bc_runtime_cli.h"
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+static void bc_duplicate_cli_log_cstring(const char* message)
+{
+    char buffer[512];
+    bc_core_writer_t writer;
+    if (!bc_core_writer_init_standard_error(&writer, buffer, sizeof(buffer))) {
+        return;
+    }
+    bc_core_writer_write_cstring(&writer, message);
+    bc_core_writer_destroy(&writer);
+}
+
+static void bc_duplicate_cli_log_invalid_value(const char* option_name, const char* value)
+{
+    char buffer[512];
+    bc_core_writer_t writer;
+    if (!bc_core_writer_init_standard_error(&writer, buffer, sizeof(buffer))) {
+        return;
+    }
+    bc_core_writer_write_cstring(&writer, "bc-duplicate: invalid value for ");
+    bc_core_writer_write_cstring(&writer, option_name);
+    bc_core_writer_write_cstring(&writer, ": '");
+    bc_core_writer_write_cstring(&writer, value);
+    bc_core_writer_write_cstring(&writer, "'\n");
+    bc_core_writer_destroy(&writer);
+}
+
+static void bc_duplicate_cli_log_internal_missing(const char* key)
+{
+    char buffer[512];
+    bc_core_writer_t writer;
+    if (!bc_core_writer_init_standard_error(&writer, buffer, sizeof(buffer))) {
+        return;
+    }
+    bc_core_writer_write_cstring(&writer, "bc-duplicate: internal error: missing ");
+    bc_core_writer_write_cstring(&writer, key);
+    bc_core_writer_write_char(&writer, '\n');
+    bc_core_writer_destroy(&writer);
+}
+
+static bool bc_duplicate_cli_format_command_key(char* buffer, size_t capacity, const char* command_name, const char* suffix)
+{
+    bc_core_writer_t writer;
+    if (!bc_core_writer_init_buffer_only(&writer, buffer, capacity - 1U)) {
+        return false;
+    }
+    if (!bc_core_writer_write_cstring(&writer, command_name)) {
+        return false;
+    }
+    if (!bc_core_writer_write_cstring(&writer, suffix)) {
+        return false;
+    }
+    const char* data = NULL;
+    size_t length = 0;
+    if (!bc_core_writer_buffer_data(&writer, &data, &length)) {
+        return false;
+    }
+    buffer[length] = '\0';
+    return true;
+}
 
 static const char* const bc_duplicate_algorithm_values[] = {"xxh3", "xxh128", "sha256", NULL};
 
@@ -193,7 +249,10 @@ static bool bc_duplicate_cli_bind_threads(const char* value, bc_duplicate_thread
     if (value[0] == '\0') {
         return false;
     }
-    const size_t value_length = strlen(value);
+    size_t value_length = 0;
+    if (!bc_core_length(value, '\0', &value_length)) {
+        return false;
+    }
     uint64_t parsed_value = 0;
     size_t consumed = 0;
     if (!bc_core_parse_unsigned_integer_64_decimal(value, value_length, &parsed_value, &consumed)) {
@@ -237,9 +296,16 @@ static bool bc_duplicate_cli_bind_minimum_size(const char* value, size_t* out_mi
     if (value == NULL || value[0] == '\0') {
         return false;
     }
-    char* end_pointer = NULL;
-    unsigned long long parsed_value = strtoull(value, &end_pointer, 10);
-    if (end_pointer == value || *end_pointer != '\0') {
+    size_t value_length = 0;
+    if (!bc_core_length(value, '\0', &value_length)) {
+        return false;
+    }
+    uint64_t parsed_value = 0;
+    size_t consumed = 0;
+    if (!bc_core_parse_unsigned_integer_64_decimal(value, value_length, &parsed_value, &consumed)) {
+        return false;
+    }
+    if (consumed != value_length) {
         return false;
     }
     *out_minimum_size = (size_t)parsed_value;
@@ -251,11 +317,11 @@ bool bc_duplicate_cli_bind_global_threads(const bc_runtime_config_store_t* store
 {
     const char* threads_value = NULL;
     if (!bc_runtime_config_store_get_string(store, "global.threads", &threads_value)) {
-        fputs("bc-duplicate: internal error: missing global.threads\n", stderr);
+        bc_duplicate_cli_log_cstring("bc-duplicate: internal error: missing global.threads\n");
         return false;
     }
     if (!bc_duplicate_cli_bind_threads(threads_value, out_mode, out_explicit_worker_count)) {
-        fprintf(stderr, "bc-duplicate: invalid value for --threads: '%s'\n", threads_value);
+        bc_duplicate_cli_log_invalid_value("--threads", threads_value);
         return false;
     }
     return true;
@@ -266,56 +332,72 @@ static bool bc_duplicate_cli_bind_command_options(const bc_runtime_config_store_
 {
     char key_buffer[128];
 
-    snprintf(key_buffer, sizeof(key_buffer), "%s.algorithm", command_name);
+    if (!bc_duplicate_cli_format_command_key(key_buffer, sizeof(key_buffer), command_name, ".algorithm")) {
+        return false;
+    }
     const char* algorithm_value = NULL;
     if (!bc_runtime_config_store_get_string(store, key_buffer, &algorithm_value)) {
-        fprintf(stderr, "bc-duplicate: internal error: missing %s\n", key_buffer);
+        bc_duplicate_cli_log_internal_missing(key_buffer);
         return false;
     }
     if (!bc_duplicate_cli_bind_algorithm(algorithm_value, &out_options->algorithm)) {
-        fprintf(stderr, "bc-duplicate: invalid value for --algorithm: '%s'\n", algorithm_value);
+        bc_duplicate_cli_log_invalid_value("--algorithm", algorithm_value);
         return false;
     }
 
-    snprintf(key_buffer, sizeof(key_buffer), "%s.minimum-size", command_name);
+    if (!bc_duplicate_cli_format_command_key(key_buffer, sizeof(key_buffer), command_name, ".minimum-size")) {
+        return false;
+    }
     const char* minimum_size_value = NULL;
     if (!bc_runtime_config_store_get_string(store, key_buffer, &minimum_size_value)) {
-        fprintf(stderr, "bc-duplicate: internal error: missing %s\n", key_buffer);
+        bc_duplicate_cli_log_internal_missing(key_buffer);
         return false;
     }
     if (!bc_duplicate_cli_bind_minimum_size(minimum_size_value, &out_options->minimum_file_size)) {
-        fprintf(stderr, "bc-duplicate: invalid value for --minimum-size: '%s'\n", minimum_size_value);
+        bc_duplicate_cli_log_invalid_value("--minimum-size", minimum_size_value);
         return false;
     }
 
-    snprintf(key_buffer, sizeof(key_buffer), "%s.include", command_name);
+    if (!bc_duplicate_cli_format_command_key(key_buffer, sizeof(key_buffer), command_name, ".include")) {
+        return false;
+    }
     const char* include_value = NULL;
     if (bc_runtime_config_store_get_string(store, key_buffer, &include_value)) {
         out_options->include_list = include_value;
     }
 
-    snprintf(key_buffer, sizeof(key_buffer), "%s.exclude", command_name);
+    if (!bc_duplicate_cli_format_command_key(key_buffer, sizeof(key_buffer), command_name, ".exclude")) {
+        return false;
+    }
     const char* exclude_value = NULL;
     if (bc_runtime_config_store_get_string(store, key_buffer, &exclude_value)) {
         out_options->exclude_list = exclude_value;
     }
 
-    snprintf(key_buffer, sizeof(key_buffer), "%s.hidden", command_name);
+    if (!bc_duplicate_cli_format_command_key(key_buffer, sizeof(key_buffer), command_name, ".hidden")) {
+        return false;
+    }
     bool hidden_value = false;
     (void)bc_runtime_config_store_get_boolean(store, key_buffer, &hidden_value);
     out_options->include_hidden = hidden_value;
 
-    snprintf(key_buffer, sizeof(key_buffer), "%s.follow-symlinks", command_name);
+    if (!bc_duplicate_cli_format_command_key(key_buffer, sizeof(key_buffer), command_name, ".follow-symlinks")) {
+        return false;
+    }
     bool follow_value = false;
     (void)bc_runtime_config_store_get_boolean(store, key_buffer, &follow_value);
     out_options->follow_symlinks = follow_value;
 
-    snprintf(key_buffer, sizeof(key_buffer), "%s.match-hardlinks", command_name);
+    if (!bc_duplicate_cli_format_command_key(key_buffer, sizeof(key_buffer), command_name, ".match-hardlinks")) {
+        return false;
+    }
     bool match_value = false;
     (void)bc_runtime_config_store_get_boolean(store, key_buffer, &match_value);
     out_options->match_hardlinks = match_value;
 
-    snprintf(key_buffer, sizeof(key_buffer), "%s.one-file-system", command_name);
+    if (!bc_duplicate_cli_format_command_key(key_buffer, sizeof(key_buffer), command_name, ".one-file-system")) {
+        return false;
+    }
     bool one_fs_value = false;
     (void)bc_runtime_config_store_get_boolean(store, key_buffer, &one_fs_value);
     out_options->one_file_system = one_fs_value;
@@ -333,7 +415,7 @@ bool bc_duplicate_cli_bind_options(const bc_runtime_config_store_t* store, const
     }
 
     if (parsed->command == NULL) {
-        fputs("bc-duplicate: internal error: no command parsed\n", stderr);
+        bc_duplicate_cli_log_cstring("bc-duplicate: internal error: no command parsed\n");
         return false;
     }
 
@@ -344,7 +426,14 @@ bool bc_duplicate_cli_bind_options(const bc_runtime_config_store_t* store, const
     } else if (bc_duplicate_strings_equal(command_name, "summary")) {
         out_options->command = BC_DUPLICATE_COMMAND_SUMMARY;
     } else {
-        fprintf(stderr, "bc-duplicate: internal error: unknown command '%s'\n", command_name);
+        char buffer[512];
+        bc_core_writer_t writer;
+        if (bc_core_writer_init_standard_error(&writer, buffer, sizeof(buffer))) {
+            bc_core_writer_write_cstring(&writer, "bc-duplicate: internal error: unknown command '");
+            bc_core_writer_write_cstring(&writer, command_name);
+            bc_core_writer_write_cstring(&writer, "'\n");
+            bc_core_writer_destroy(&writer);
+        }
         return false;
     }
 
@@ -355,11 +444,11 @@ bool bc_duplicate_cli_bind_options(const bc_runtime_config_store_t* store, const
     if (out_options->command == BC_DUPLICATE_COMMAND_SCAN) {
         const char* output_value = NULL;
         if (!bc_runtime_config_store_get_string(store, "scan.output", &output_value)) {
-            fputs("bc-duplicate: internal error: missing scan.output\n", stderr);
+            bc_duplicate_cli_log_cstring("bc-duplicate: internal error: missing scan.output\n");
             return false;
         }
         if (!bc_duplicate_cli_bind_output(output_value, &out_options->output_destination_mode, &out_options->output_destination_path)) {
-            fprintf(stderr, "bc-duplicate: invalid value for --output: '%s'\n", output_value);
+            bc_duplicate_cli_log_invalid_value("--output", output_value);
             return false;
         }
     } else {

@@ -3,20 +3,14 @@
 #include "bc_duplicate_grouping_internal.h"
 
 #include "bc_allocators_pool.h"
+#include "bc_core_sort.h"
 
-#include <stdlib.h>
-
-static int bc_duplicate_grouping_fast_hash_compare(const void* lhs, const void* rhs)
+static bool bc_duplicate_grouping_fast_hash_less_than(const void* lhs, const void* rhs, void* user_data)
 {
+    (void)user_data;
     const bc_duplicate_file_entry_t* left = (const bc_duplicate_file_entry_t*)lhs;
     const bc_duplicate_file_entry_t* right = (const bc_duplicate_file_entry_t*)rhs;
-    if (left->fast_hash < right->fast_hash) {
-        return -1;
-    }
-    if (left->fast_hash > right->fast_hash) {
-        return 1;
-    }
-    return 0;
+    return left->fast_hash < right->fast_hash;
 }
 
 bool bc_duplicate_grouping_by_fast_hash(bc_allocators_context_t* memory_context, bc_duplicate_file_entry_t* entries,
@@ -43,7 +37,7 @@ bool bc_duplicate_grouping_by_fast_hash(bc_allocators_context_t* memory_context,
         bc_duplicate_file_entry_t* run_begin = &entries[size_group->start_index];
         size_t run_length = size_group->entry_count;
 
-        qsort(run_begin, run_length, sizeof(bc_duplicate_file_entry_t), bc_duplicate_grouping_fast_hash_compare);
+        bc_core_sort_with_compare(run_begin, run_length, sizeof(bc_duplicate_file_entry_t), bc_duplicate_grouping_fast_hash_less_than, NULL);
 
         size_t cursor = 0;
         while (cursor < run_length) {

@@ -61,7 +61,7 @@ test_bc_duplicate_worker_sort_unit = executable('test_bc_duplicate_worker_sort_u
   'test_bc_duplicate_worker_sort_unit.c',
   '../src/worker/bc_duplicate_worker_sort.c',
   include_directories : [bc_duplicate_internal_inc],
-  dependencies : [cmocka_dep],
+  dependencies : [cmocka_dep, bc_core_dep],
 )
 test('bc_duplicate_worker_sort_unit', test_bc_duplicate_worker_sort_unit)
 
