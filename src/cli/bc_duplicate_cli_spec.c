@@ -74,8 +74,8 @@ static const bc_runtime_cli_option_spec_t bc_duplicate_global_options[] = {
         .long_name = "threads",
         .type = BC_RUNTIME_CLI_OPTION_STRING,
         .default_value = "auto",
-        .value_placeholder = "auto|0|N",
-        .help_summary = "worker count: auto, 0 (single-thread), or N",
+        .value_placeholder = "auto|auto-io|0|N",
+        .help_summary = "worker count: auto (physical cores), auto-io (logical cores, oversubscribe for I/O-bound), 0 (single-thread), or N",
     },
 };
 
@@ -243,6 +243,11 @@ static bool bc_duplicate_cli_bind_threads(const char* value, bc_duplicate_thread
 {
     if (bc_duplicate_strings_equal(value, "auto")) {
         *out_mode = BC_DUPLICATE_THREADS_MODE_AUTO;
+        *out_explicit_worker_count = 0;
+        return true;
+    }
+    if (bc_duplicate_strings_equal(value, "auto-io")) {
+        *out_mode = BC_DUPLICATE_THREADS_MODE_AUTO_IO;
         *out_explicit_worker_count = 0;
         return true;
     }
