@@ -74,8 +74,8 @@ static const bc_runtime_cli_option_spec_t bc_duplicate_global_options[] = {
         .long_name = "threads",
         .type = BC_RUNTIME_CLI_OPTION_STRING,
         .default_value = "auto",
-        .value_placeholder = "auto|0|N",
-        .help_summary = "worker count: auto, 0 (single-thread), or N",
+        .value_placeholder = "mono|auto|io|N",
+        .help_summary = "thread mode: mono (single-thread, alias 0), auto (CPU-bound, physical cores - 1, default), io (I/O-bound, logical processors - 1, oversubscribe), or N (1..logical_cpu_count)",
     },
 };
 
@@ -241,8 +241,18 @@ static bool bc_duplicate_cli_bind_algorithm(const char* value, bc_duplicate_algo
 
 static bool bc_duplicate_cli_bind_threads(const char* value, bc_duplicate_threads_mode_t* out_mode, size_t* out_explicit_worker_count)
 {
+    if (bc_duplicate_strings_equal(value, "mono")) {
+        *out_mode = BC_DUPLICATE_THREADS_MODE_MONO;
+        *out_explicit_worker_count = 0;
+        return true;
+    }
     if (bc_duplicate_strings_equal(value, "auto")) {
         *out_mode = BC_DUPLICATE_THREADS_MODE_AUTO;
+        *out_explicit_worker_count = 0;
+        return true;
+    }
+    if (bc_duplicate_strings_equal(value, "io")) {
+        *out_mode = BC_DUPLICATE_THREADS_MODE_IO;
         *out_explicit_worker_count = 0;
         return true;
     }

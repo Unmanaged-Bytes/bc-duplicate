@@ -21,7 +21,7 @@ executable('fuzz_bc_duplicate_cli_parse',
     bc_duplicate_fuzz_cli_sources,
     include_directories : [bc_duplicate_internal_inc],
     dependencies : bc_duplicate_deps,
-    c_args : fuzzer_c_args,
+    c_args : fuzzer_c_args + [bc_duplicate_version_c_arg],
     link_args : fuzzer_link_args,
 )
 

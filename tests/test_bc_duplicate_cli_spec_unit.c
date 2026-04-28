@@ -99,6 +99,44 @@ static void test_bind_global_threads_mono(void** state)
     assert_int_equal(count, 0);
 }
 
+static void test_bind_global_threads_mono_keyword(void** state)
+{
+    struct fixture* fixture = *state;
+    const char* argv[] = {"bc-duplicate", "--threads=mono", "scan", "/path"};
+    bc_runtime_cli_parsed_t parsed;
+    assert_int_equal(parse_argv(fixture->store, 4, argv, &parsed), BC_RUNTIME_CLI_PARSE_OK);
+
+    bc_duplicate_threads_mode_t mode = BC_DUPLICATE_THREADS_MODE_AUTO;
+    size_t count = 99;
+    assert_true(bc_duplicate_cli_bind_global_threads(fixture->store, &mode, &count));
+    assert_int_equal(mode, BC_DUPLICATE_THREADS_MODE_MONO);
+    assert_int_equal(count, 0);
+}
+
+static void test_bind_global_threads_io(void** state)
+{
+    struct fixture* fixture = *state;
+    const char* argv[] = {"bc-duplicate", "--threads=io", "scan", "/path"};
+    bc_runtime_cli_parsed_t parsed;
+    assert_int_equal(parse_argv(fixture->store, 4, argv, &parsed), BC_RUNTIME_CLI_PARSE_OK);
+
+    bc_duplicate_threads_mode_t mode = BC_DUPLICATE_THREADS_MODE_AUTO;
+    size_t count = 99;
+    assert_true(bc_duplicate_cli_bind_global_threads(fixture->store, &mode, &count));
+    assert_int_equal(mode, BC_DUPLICATE_THREADS_MODE_IO);
+    assert_int_equal(count, 0);
+}
+
+static void test_bind_global_threads_auto_io_rejected(void** state)
+{
+    struct fixture* fixture = *state;
+    assert_true(bc_runtime_config_store_set(fixture->store, "global.threads", "auto-io"));
+    bc_runtime_config_store_sort(fixture->store);
+    bc_duplicate_threads_mode_t mode = BC_DUPLICATE_THREADS_MODE_AUTO;
+    size_t count = 0;
+    assert_false(bc_duplicate_cli_bind_global_threads(fixture->store, &mode, &count));
+}
+
 static void test_bind_global_threads_explicit(void** state)
 {
     struct fixture* fixture = *state;
@@ -326,6 +364,9 @@ int main(void)
         cmocka_unit_test(test_program_spec_has_scan_and_summary),
         cmocka_unit_test_setup_teardown(test_bind_global_threads_auto, setup, teardown),
         cmocka_unit_test_setup_teardown(test_bind_global_threads_mono, setup, teardown),
+        cmocka_unit_test_setup_teardown(test_bind_global_threads_mono_keyword, setup, teardown),
+        cmocka_unit_test_setup_teardown(test_bind_global_threads_io, setup, teardown),
+        cmocka_unit_test_setup_teardown(test_bind_global_threads_auto_io_rejected, setup, teardown),
         cmocka_unit_test_setup_teardown(test_bind_global_threads_explicit, setup, teardown),
         cmocka_unit_test_setup_teardown(test_scan_default_options, setup, teardown),
         cmocka_unit_test_setup_teardown(test_scan_all_algorithms, setup, teardown),
